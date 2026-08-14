@@ -173,6 +173,22 @@ export function compactTokens(value: number): string {
 }
 
 /**
+ * Human wall-clock duration: 940 -> "940ms", 5000 -> "5s", 74000 -> "1m14s",
+ * 3700000 -> "1h01m". Used by the HUD/Fleet widgets for honest active-run
+ * durations (replaces the old ever-growing runtime uptime line).
+ */
+export function formatDurationMs(ms: number): string {
+  const value = Math.max(0, Math.trunc(ms));
+  if (value < 1_000) return `${value}ms`;
+  const seconds = Math.floor(value / 1_000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+/**
  * Readable per-run usage line for the monitor (B4). Distinguishes the two
  * usage semantics: cumulative run totals (delta-based input/output) and the
  * current-context snapshot (`ctx`), e.g. `3t · 6.0k in · 150 out · ctx 11.1k

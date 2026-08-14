@@ -303,7 +303,7 @@ describe("engine/dispatch: memory integration", () => {
       const capture: { args?: string[] } = {};
       const engine = new DispatchEngine({ repoRoot: dir, spawn: recordingSpawn(capture), sessionDir: join(dir, "sessions"), source: "delegate_task" });
       try {
-        const result = await engine.single("alpha", contractTask("do work"), { outputContract: "base.v1" });
+        const result = await engine.single("alpha", contractTask("do work"), { outputContract: "base.v1", allowedPaths: ["reports/"] });
         assert.equal(result.exitCode, 0);
         assert.equal(result.gatePassed, true);
         const prompt = systemPromptOf(capture.args);
@@ -330,7 +330,12 @@ describe("engine/dispatch: memory integration", () => {
       try {
         const result = await engine.single("beta", contractTask("plain run"), { outputContract: "base.v1" });
         assert.equal(result.gatePassed, true);
-        assert.equal(systemPromptOf(capture.args), "You are beta. Produce evidence.");
+        const prompt = systemPromptOf(capture.args)!;
+        // Card prompt stays first; no memory block; the appended FINAL OUTPUT
+        // CONTRACT marker line is expected on every dispatch.
+        assert.ok(prompt.startsWith("You are beta. Produce evidence."));
+        assert.ok(!prompt.includes(MEMORY_BLOCK_HEADER));
+        assert.ok(prompt.includes("FINAL OUTPUT CONTRACT:"));
         assert.ok(!existsSync(join(dir, ".pi", "agent-memory")));
       } finally {
         engine.close();
@@ -348,7 +353,7 @@ describe("engine/dispatch: memory integration", () => {
       const capture: { args?: string[] } = {};
       const engine = new DispatchEngine({ repoRoot: dir, spawn: recordingSpawn(capture), sessionDir: join(dir, "sessions"), source: "delegate_task" });
       try {
-        await engine.single("alpha", contractTask("scoped work"), { outputContract: "base.v1", memory: "local" });
+        await engine.single("alpha", contractTask("scoped work"), { outputContract: "base.v1", allowedPaths: ["reports/"], memory: "local" });
         const prompt = systemPromptOf(capture.args)!;
         assert.ok(prompt.includes(join(".pi", "agent-memory-local", "alpha", MEMORY_FILE_NAME)));
         assert.ok(!prompt.includes(join(".pi", "agent-memory", "alpha")));
@@ -370,8 +375,11 @@ describe("engine/dispatch: memory integration", () => {
       const capture: { args?: string[] } = {};
       const engine = new DispatchEngine({ repoRoot: dir, spawn: recordingSpawn(capture), sessionDir: join(dir, "sessions"), source: "delegate_task" });
       try {
-        await engine.single("alpha", contractTask("no memory"), { outputContract: "base.v1", memory: false });
-        assert.equal(systemPromptOf(capture.args), "You are alpha. Produce evidence.");
+        await engine.single("alpha", contractTask("no memory"), { outputContract: "base.v1", allowedPaths: ["reports/"], memory: false });
+        const prompt = systemPromptOf(capture.args)!;
+        assert.ok(prompt.startsWith("You are alpha. Produce evidence."));
+        assert.ok(!prompt.includes(MEMORY_BLOCK_HEADER));
+        assert.ok(prompt.includes("FINAL OUTPUT CONTRACT:"));
         assert.ok(!existsSync(join(dir, ".pi", "agent-memory")));
       } finally {
         engine.close();
@@ -424,7 +432,7 @@ describe("engine/dispatch: memory integration", () => {
         memoryAgentDir: join(dir, "user-agents"),
       });
       try {
-        await engine.single("gamma", contractTask("user scope"), { outputContract: "base.v1" });
+        await engine.single("gamma", contractTask("user scope"), { outputContract: "base.v1", allowedPaths: ["reports/"] });
         const prompt = systemPromptOf(capture.args)!;
         assert.ok(prompt.includes(join(dir, "user-agents", "agent-memory", "gamma", MEMORY_FILE_NAME)));
         assert.ok(existsSync(join(dir, "user-agents", "agent-memory", "gamma")));

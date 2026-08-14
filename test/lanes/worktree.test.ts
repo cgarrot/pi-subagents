@@ -14,11 +14,13 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   WORKTREE_DESC_MAX_CHARS,
+  classifyWorktreeGitError,
   cleanupWorktree,
   createWorktree,
   getWorktreeOutcome,
   pruneWorktrees,
   validateWorktreeIsolation,
+  validateWorktreeIsolationDetailed,
   worktreeCommitMessage,
   type WorktreeCreation,
 } from "../../src/lanes/worktree.js";
@@ -239,6 +241,37 @@ describe("lanes/worktree: validateWorktreeIsolation (preflight gate)", () => {
       rmSync(noCommits, { recursive: true, force: true });
     }
   });
+
+  it("classifies gate failures (non_git_repo / no_commits) without raw stderr in the error line", () => {
+    const empty = mkdtempSync(join(tmpdir(), "pi-subagents-wt-classify-"));
+    const noCommits = mkdtempSync(join(tmpdir(), "pi-subagents-wt-classify-nc-"));
+    try {
+      const outside = validateWorktreeIsolationDetailed("worktree", empty);
+      assert.equal(outside.kind, "non_git_repo");
+      assert.match(outside.errors[0]!, /worktree isolation requires a git repository with at least one commit \(non_git_repo\)/);
+      assert.ok(!outside.errors[0]!.includes("fatal:"), "no raw git stderr in the parent-facing error");
+      assert.ok(outside.detail && outside.detail.length > 0 && outside.detail.length <= 200, "bounded detail rides separately");
+      assert.ok(!outside.detail!.includes("\n"), "detail is single-line");
+
+      git(noCommits, ["init", "-q"]);
+      const unborn = validateWorktreeIsolationDetailed("worktree", noCommits);
+      assert.equal(unborn.kind, "no_commits");
+      assert.match(unborn.errors[0]!, /\(no_commits\)/);
+      assert.ok(!unborn.errors[0]!.includes("fatal:"), "no raw git stderr in the parent-facing error");
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+      rmSync(noCommits, { recursive: true, force: true });
+    }
+  });
+
+  it("classifyWorktreeGitError maps git failure texts onto the three kinds", () => {
+    assert.equal(classifyWorktreeGitError("fatal: not a git repository (or any of the parent directories)"), "non_git_repo");
+    assert.equal(classifyWorktreeGitError("fatal: not a git worktree: '.pi'"), "non_git_repo");
+    assert.equal(classifyWorktreeGitError("fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree"), "no_commits");
+    assert.equal(classifyWorktreeGitError("error: object does not have any commits yet"), "no_commits");
+    assert.equal(classifyWorktreeGitError("git: timeout after 30s"), "git_error");
+    assert.equal(classifyWorktreeGitError("spawn git ENOENT"), "git_error");
+  });
 });
 
 describe("lanes/pool: LaneDispatchInput cwd override", () => {
@@ -455,8 +488,12 @@ describe("engine/dispatch: isolation 'worktree'", () => {
       assert.equal(result.gatePassed, false);
       assert.equal(result.failureKind, "preflight");
       assert.match(result.gateErrors!.join("; "), /worktree isolation requires a git repository/i);
+      assert.ok(!result.gateErrors!.join("; ").includes("fatal:"), "no raw git stderr in the parent-facing gate errors");
+      assert.equal(result.worktreeError?.kind, "non_git_repo", "classified failure rides the result (details)");
+      assert.ok(result.worktreeError?.detail, "bounded git detail available in details");
       assert.equal(spawnCount, 0, "no child launched");
       assert.equal(engine.monitor.runs[0]!.status, "preflight_failed");
+      assert.ok(!engine.monitor.runs[0]!.gateErrors!.join("; ").includes("fatal:"), "run view gate errors stay clean");
       engine.close();
     } finally {
       rmSync(repo, { recursive: true, force: true });

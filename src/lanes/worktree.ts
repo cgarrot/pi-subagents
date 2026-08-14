@@ -89,6 +89,44 @@ export interface WorktreeRunOutcome {
 /** ChildResult enriched with the C6 worktree outcome (engine attaches it). */
 export type WorktreeChildResult = ChildResult & { worktree?: WorktreeRunOutcome };
 
+/** Classified worktree gate failure kinds (preflight, cycle-4 honesty fix). */
+export type WorktreeErrorKind = "non_git_repo" | "no_commits" | "git_error";
+
+/** Upper bound on the classified git detail carried in tool `details`. */
+const WORKTREE_DETAIL_MAX_CHARS = 200;
+
+/**
+ * Classify a git failure detail into a worktree error kind:
+ *   non_git_repo — `fatal: not a git repository` (outside any repo)
+ *   no_commits   — unresolvable HEAD (`ambiguous argument 'HEAD'` /
+ *                  `unknown revision` / `does not have any commits yet`)
+ *   git_error    — any other git failure (timeout, permission, …)
+ * Pure string classification — no fs, no spawn.
+ */
+export function classifyWorktreeGitError(detail: string): WorktreeErrorKind {
+  const text = detail.toLowerCase();
+  if (text.includes("not a git repository") || text.includes("not a git worktree")) return "non_git_repo";
+  if (
+    text.includes("unknown revision") ||
+    text.includes("ambiguous argument") ||
+    text.includes("bad revision") ||
+    text.includes("does not have any commits yet")
+  ) {
+    return "no_commits";
+  }
+  return "git_error";
+}
+
+/** Classified worktree preflight outcome (clean errors; detail carried apart). */
+export interface WorktreeGateOutcome {
+  /** Clean, classified gate-error lines — NO raw git stderr (parent-facing). */
+  errors: string[];
+  /** Failure kind when the gate blocked (undefined when it passed). */
+  kind?: WorktreeErrorKind;
+  /** Bounded raw git detail (single line, ≤200 chars) for tool `details` only. */
+  detail?: string;
+}
+
 /** Read the C6 worktree outcome from a child result (undefined when absent). */
 export function getWorktreeOutcome(result: ChildResult): WorktreeRunOutcome | undefined {
   const outcome = (result as WorktreeChildResult).worktree;
@@ -129,18 +167,39 @@ export function worktreeCommitMessage(description: string): string {
 }
 
 /**
- * Preflight validator: `worktree` isolation requires a git repository with at
- * least one commit (a resolvable HEAD). Returns blocking errors otherwise.
+ * Preflight validator: `worktree` isolation requires a git repository with
+ * at least one commit (a resolvable HEAD). Returns blocking errors otherwise.
  */
 export function validateWorktreeIsolation(isolation: string | undefined, repoRoot: string, opts: { gitTimeoutMs?: number } = {}): string[] {
-  if (isolation !== "worktree") return [];
+  return validateWorktreeIsolationDetailed(isolation, repoRoot, opts).errors;
+}
+
+/**
+ * Classified preflight validator (cycle 4): the gate error line carries ONLY
+ * the classification (`… with at least one commit (non_git_repo)`) — the raw
+ * git stderr stays out of the parent-facing message and rides `detail`
+ * (bounded, single-line) for tool `details` payloads instead.
+ */
+export function validateWorktreeIsolationDetailed(
+  isolation: string | undefined,
+  repoRoot: string,
+  opts: { gitTimeoutMs?: number } = {},
+): WorktreeGateOutcome {
+  if (isolation !== "worktree") return { errors: [] };
   const timeoutMs = opts.gitTimeoutMs ?? WORKTREE_GIT_TIMEOUT_MS;
   try {
     gitIn(resolve(repoRoot), ["rev-parse", "HEAD"], timeoutMs);
+    return { errors: [] };
   } catch (error) {
-    return [`worktree isolation requires a git repository with at least one commit: ${(error as Error).message}`];
+    const raw = (error as Error).message;
+    const kind = classifyWorktreeGitError(raw);
+    const detail = raw.replace(/\s+/g, " ").trim().slice(0, WORKTREE_DETAIL_MAX_CHARS);
+    return {
+      errors: [`worktree isolation requires a git repository with at least one commit (${kind})`],
+      kind,
+      detail,
+    };
   }
-  return [];
 }
 
 /**

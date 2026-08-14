@@ -14,12 +14,15 @@ import {
   FleetView,
   PEEK_MAX_BYTES,
   PEEK_MAX_LINES,
+  fleetRunLines,
   peekTranscript,
   renderFleetLines,
+  runUsageSummary,
   stopRun,
 } from "../../src/extension/fleet.js";
 import type { SubagentsRuntime } from "../../src/extension/tools.js";
 import type { SessionContext } from "../../src/extension/pi-types.js";
+import { SharedIntervalTicker } from "../../src/extension/widget-refresh.js";
 import { fakeCtx } from "./stub-api.js";
 
 function tempDir(label: string): string {
@@ -41,7 +44,7 @@ function makeRuntime(dir: string): SubagentsRuntime {
 
 function addRun(
   rt: SubagentsRuntime,
-  input: { id: string; agent: string; status: "queued" | "running" | "complete" | "failed"; startedAtMs: number; sessionPath?: string; usage?: DelegationRunView["usage"] },
+  input: { id: string; agent: string; status: "queued" | "running" | "complete" | "failed"; startedAtMs: number; sessionPath?: string; usage?: DelegationRunView["usage"]; liveUsage?: DelegationRunView["liveUsage"] },
 ): void {
   startDelegationRun(rt.engine.monitor, {
     id: input.id,
@@ -63,6 +66,7 @@ function addRun(
     });
   }
   if (input.usage) updateDelegationRun(rt.engine.monitor, input.id, { usage: input.usage });
+  if (input.liveUsage) updateDelegationRun(rt.engine.monitor, input.id, { liveUsage: input.liveUsage });
 }
 
 describe("extension/fleet: renderFleetLines", () => {
@@ -88,9 +92,12 @@ describe("extension/fleet: renderFleetLines", () => {
       assert.match(text, /alpha running/);
       assert.match(text, /150 tok/);
       assert.match(text, /\$0\.0123/);
-      assert.match(text, /5000ms/);
+      assert.match(text, /5s/);
       assert.match(text, /beta queued/);
       assert.ok(!text.includes("gamma"), "terminal runs must not appear in the fleet");
+      // no flicker-formatted raw ms and no $0.0000 noise on the queued row
+      assert.ok(!text.includes("5000ms"), "durations render human (5s), not raw ms");
+      assert.ok(!text.includes("$0.0000"), "unknown cost must not render as $0.0000");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -194,6 +201,51 @@ describe("extension/fleet: stopRun", () => {
   });
 });
 
+describe("extension/fleet: live usage (turn feed)", () => {
+  it("renders ≈ live context tokens for an active run with liveUsage and no settled usage", () => {
+    const dir = tempDir("live");
+    try {
+      const rt = makeRuntime(dir);
+      addRun(rt, {
+        id: "r1",
+        agent: "alpha",
+        status: "running",
+        startedAtMs: 1_000,
+        liveUsage: { turns: 2, contextTokens: 12_400, model: "zai/glm-5.3", atMs: 2_000 },
+      });
+      const rows = fleetRunLines(() => rt, 5_000);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.tokens, 12_400);
+      assert.equal(rows[0]!.live, true);
+      assert.equal(rows[0]!.model, "zai/glm-5.3");
+      const text = renderFleetLines(() => rt, 5_000)!.join("\n");
+      assert.match(text, /≈12\.4k tok/, "live tokens carry the ≈ estimate marker");
+      assert.ok(!text.includes("$"), "cost is unknown mid-run — never a fake $0.0000");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("settled usage stays authoritative over the live snapshot", () => {
+    const dir = tempDir("settledwins");
+    try {
+      const rt = makeRuntime(dir);
+      addRun(rt, {
+        id: "r1",
+        agent: "alpha",
+        status: "running",
+        startedAtMs: 1_000,
+        usage: { turns: 3, input: 900, output: 100, cacheRead: 0, cacheWrite: 0, cost: 0.02, contextTokens: 1_000 },
+        liveUsage: { turns: 2, contextTokens: 50_000, atMs: 2_000 },
+      });
+      const summary = runUsageSummary(rt.engine.monitor.runs[0]!);
+      assert.deepEqual(summary, { tokens: 1_000, cost: 0.02, live: false });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("extension/fleet: FleetView widget registration", () => {
   it("registers the widget and status on attach, and clears them on detach", () => {
     const dir = tempDir("widget");
@@ -213,7 +265,7 @@ describe("extension/fleet: FleetView widget registration", () => {
         },
       };
 
-      const fleet = new FleetView(ctx, () => rt);
+      const fleet = new FleetView(ctx, () => rt, new SharedIntervalTicker(10_000));
       fleet.attach();
       assert.ok(widgets.has(FLEET_WIDGET_ID), "fleet widget should be registered");
       assert.match((widgets.get(FLEET_WIDGET_ID) ?? []).join("\n"), /alpha running/);
@@ -225,6 +277,47 @@ describe("extension/fleet: FleetView widget registration", () => {
       fleet.detach();
       assert.equal(widgets.get(FLEET_WIDGET_ID), undefined, "detach clears the widget");
       assert.equal(statuses.get("subagents-fleet"), undefined, "detach clears the status");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips repaints when the rendered content is unchanged (anti-flicker)", () => {
+    const dir = tempDir("diff");
+    try {
+      const rt = makeRuntime(dir);
+      // startedAtMs relative to now so the FORMATTED duration ("1s") stays
+      // stable across consecutive renders within the test.
+      addRun(rt, { id: "r1", agent: "alpha", status: "running", startedAtMs: Date.now() - 1_000, liveUsage: { turns: 1, contextTokens: 100, atMs: Date.now() - 500 } });
+      let widgetCalls = 0;
+      let statusCalls = 0;
+      const ctx: SessionContext = {
+        cwd: dir,
+        hasUI: true,
+        ui: {
+          notify: () => {},
+          setWidget: () => { widgetCalls += 1; },
+          setStatus: () => { statusCalls += 1; },
+        },
+      };
+      const ticker = new SharedIntervalTicker(10_000); // never fires during the test
+      const fleet = new FleetView(ctx, () => rt, ticker);
+      fleet.attach();
+      const afterAttach = widgetCalls;
+      assert.equal(statusCalls, 1, "status painted once on attach");
+
+      // same render -> NO new setWidget/setStatus calls (idle = 0 repaint)
+      fleet.onLocalChange();
+      fleet.onLocalChange();
+      assert.equal(widgetCalls, afterAttach, "unchanged content must not repaint");
+      assert.equal(statusCalls, 1, "unchanged status must not repaint");
+
+      // content CHANGES (live usage tick) -> exactly one repaint
+      updateDelegationRun(rt.engine.monitor, "r1", { liveUsage: { turns: 2, contextTokens: 5_000, atMs: Date.now() } });
+      fleet.onLocalChange();
+      assert.equal(widgetCalls, afterAttach + 1, "changed content repaints once");
+
+      fleet.detach();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

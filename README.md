@@ -11,6 +11,44 @@ Standalone, modular extraction of the ZOB harness subagents system
   fallback; fallback carries an explicit `model_fallback` status.
 - **Ported gates** — the ZOB delegation gates carried over.
 
+## Install / use on another machine
+
+**As a Pi package** (recommended — the extension auto-loads):
+
+```bash
+pi install npm:pi-subagents-extension
+# or from git, pinned to a release tag
+pi install git:github.com/cgarrot/pi-subagents@v1.0.0
+```
+
+**From source (clone and run):**
+
+```bash
+git clone git@github.com:cgarrot/pi-subagents.git
+cd pi-subagents
+npm install
+npm run build          # tsc → dist/ (build needed for CLI + tests; the Pi
+                       # extension itself loads from src/ directly)
+```
+
+This gives the project the `delegate_task` / `delegate_agent` tools, the
+`subagents` CLI, the default agent cards (`agents/`) and the
+`subagents-routing` skill (`skills/`). Run `npm run smoke` for a headless
+E2E demo with the fake-pi fixture (no real `pi` needed).
+
+## Releases & publishing
+
+- Versioning follows semver from `package.json` (`v1.0.0` = tag + npm version).
+- The `Release` GitHub Action publishes to npm automatically on `v*` tags
+  (requires the `NPM_TOKEN` repository secret):
+  `npm version patch|minor|major && git push && git push --tags`.
+  `prepublishOnly` runs the full build + test suite before every publish.
+- The package is published as `pi-subagents-extension` on npmjs.org
+  (`publishConfig.access` is public; the plain `pi-subagents` name is already
+  taken on npm by another project) and is a Pi package (`pi` manifest +
+  `pi-package` keyword), so `pi install npm:pi-subagents-extension` works on
+  any machine and the package appears in the pi.dev gallery automatically.
+
 ## Target layout
 
 ```text
@@ -65,6 +103,15 @@ tasks** (demonstrated headless by the smoke: two chain steps share one
 The **v2 warm-loop** (one long-lived `pi` serving N tasks via a child
 extension) is a **separate future spike**, out of scope here.
 
+**F8 (fresh-per-run sessions):** single/parallel dispatches default to a
+FRESH per-run session file `<agent>-<runId>.jsonl` under `.pi/agent-sessions/`
+(one unified session dir — same as the LanePool default, the CLI `doctor`,
+and this README) — successive runs to the same agent never stack onto one
+shared session. Continuity is preserved where it matters: a **chain** shares
+one lane/session across its steps, and `continue_run` resumes the original
+run's session file (byte-offset). Passing `fresh: false` to `delegate_task`
+restores the legacy stable agent-named lane session (`<agent>.jsonl`).
+
 ## Model routing
 
 Resolution priority: `explicitModel → agentModel → class model → parentModel`.
@@ -77,6 +124,46 @@ Resolution priority: `explicitModel → agentModel → class model → parentMod
   probed. The chosen model + `direct`/`fallback` status are always exposed.
 - The model probe is an optional injected hook fired **off the critical path**
   (fire-and-forget, never awaited before spawn) with a shared long-TTL cache.
+
+### Parent-model inheritance (F3)
+
+A child dispatched **without** an explicit model inherits the parent/session
+model (spawned with `--model <parentModel>`), resolved as:
+
+1. the live session model when the host exposes it on the session context
+   (`ctx.model`, optional);
+2. otherwise the pi settings `defaultModel` — project
+   `<repoRoot>/.pi/settings.json` over the global `~/.pi/agent/settings.json`.
+
+Default class models are **quota-safe**: every class (`cheap`, `balanced`,
+`capable`) maps to the resolved parent model — the one model guaranteed
+available for this session — so a class-routed child never silently switches
+provider. Hosts wanting per-class routing pass an explicit `classModels` map
+(which replaces the default entirely).
+
+### Verified model catalog: `.pi/model-catalog.json` (F2)
+
+Explicit `model:` overrides are verified against the catalog file read at
+**every** preflight from `<repoRoot>/.pi/model-catalog.json` (schema
+`zob.model-catalog.v1`; a catalog created or updated mid-session is honored
+without restarting). Only entries with `resolutionStatus === "verified"` pass;
+anything else blocks with `model_unavailable` and remediation naming this
+path. Example catalog:
+
+```json
+{
+  "schema": "zob.model-catalog.v1",
+  "models": {
+    "ollama-cloud/deepseek-v4-flash:preview": { "resolutionStatus": "verified" },
+    "openai/gpt-4o": { "resolutionStatus": "verified" },
+    "anthropic/claude-opus-4": { "resolutionStatus": "resolved" }
+  }
+}
+```
+
+(`anthropic/claude-opus-4` above is intentionally NOT verified: it would be
+blocked — verify a model's current provider availability before flipping its
+`resolutionStatus` to `verified`.)
 
 ## Invariants (I1–I15)
 

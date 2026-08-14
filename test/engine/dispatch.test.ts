@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DispatchEngine, mapWithConcurrency } from "../../src/engine/dispatch.js";
@@ -252,6 +252,78 @@ describe("engine/dispatch: runChain with {previous} substitution", () => {
       assert.ok(r1.sessionPath && r2.sessionPath, "session paths expected");
       assert.equal(r1.sessionPath, r2.sessionPath);
       assert.equal(summarizeDelegations(engine.monitor).complete, 2);
+      engine.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("engine/dispatch: F8 fresh per-run sessions", () => {
+  it("two successive single dispatches get DIFFERENT sessionPaths (<agent>-<runId>.jsonl)", async () => {
+    const dir = tempRepo("fresh-single", ["alpha"]);
+    try {
+      const engine = new DispatchEngine({
+        repoRoot: dir,
+        spawn: compliantSpawn(),
+        sessionDir: join(dir, "sessions"),
+        source: "delegate_task",
+      });
+      const first = await engine.single("alpha", contractTask("first run"), { outputContract: "base.v1" });
+      const second = await engine.single("alpha", contractTask("second run"), { outputContract: "base.v1" });
+      assert.equal(first.exitCode, 0);
+      assert.equal(second.exitCode, 0);
+      assert.ok(first.sessionPath && second.sessionPath, "session paths expected");
+      assert.notEqual(first.sessionPath, second.sessionPath, "successive single runs must NOT share a session");
+      assert.match(basename(first.sessionPath!), /^alpha-delegate_\d+_[a-z0-9]+\.jsonl$/);
+      assert.match(basename(second.sessionPath!), /^alpha-delegate_\d+_[a-z0-9]+\.jsonl$/);
+      engine.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fresh:false restores the legacy stable agent-named session (same path across runs)", async () => {
+    const dir = tempRepo("fresh-false", ["alpha"]);
+    try {
+      const engine = new DispatchEngine({
+        repoRoot: dir,
+        spawn: compliantSpawn(),
+        sessionDir: join(dir, "sessions"),
+        source: "delegate_task",
+      });
+      const first = await engine.single("alpha", contractTask("legacy a"), { outputContract: "base.v1", fresh: false });
+      const second = await engine.single("alpha", contractTask("legacy b"), { outputContract: "base.v1", fresh: false });
+      assert.equal(first.exitCode, 0);
+      assert.equal(second.exitCode, 0);
+      assert.ok(first.sessionPath && second.sessionPath, "session paths expected");
+      assert.equal(first.sessionPath, second.sessionPath, "fresh:false must restore the shared agent lane");
+      assert.equal(basename(first.sessionPath!), "alpha.jsonl");
+      engine.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parallel tasks to the same agent get distinct per-run sessionPaths", async () => {
+    const dir = tempRepo("fresh-parallel", ["alpha"]);
+    try {
+      const engine = new DispatchEngine({
+        repoRoot: dir,
+        spawn: compliantSpawn(),
+        sessionDir: join(dir, "sessions"),
+        source: "delegate_task",
+      });
+      const details = await engine.parallel([
+        { agent: "alpha", task: contractTask("parallel a"), outputContract: "base.v1" },
+        { agent: "alpha", task: contractTask("parallel b"), outputContract: "base.v1" },
+      ]);
+      assert.equal(details.results.length, 2);
+      const [p1, p2] = details.results as [ChildResult, ChildResult];
+      assert.ok(p1.sessionPath && p2.sessionPath, "session paths expected");
+      assert.notEqual(p1.sessionPath, p2.sessionPath, "parallel runs to the same agent must NOT share a session");
+      assert.match(basename(p1.sessionPath!), /^alpha-delegate_\d+_[a-z0-9]+\.jsonl$/);
+      assert.match(basename(p2.sessionPath!), /^alpha-delegate_\d+_[a-z0-9]+\.jsonl$/);
       engine.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -12,6 +12,8 @@
  *
  * Zero @earendil-works/* imports.
  */
+/** Streaming child progress event (consumed via engine/per-run onChildEvent). */
+export type { ChildProgressEvent } from "../core/types.js";
 export * from "./runs.js";
 export * from "./dispatch.js";
 export * from "./background.js";

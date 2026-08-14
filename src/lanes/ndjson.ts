@@ -15,11 +15,49 @@
  * Pure module: zero @earendil-works/* imports, zero child_process, zero fs.
  */
 import type { AssistantLikeMessage, ChildResult } from "../core/types.js";
-import { parseJsonLine, textFromMessage } from "../core/records.js";
+import { isRecord, parseJsonLine, textFromMessage } from "../core/records.js";
 
 export interface NdjsonParserOptions {
   /** Incremental update callback (result mutated before each emit). */
-  onUpdate?: (result: ChildResult) => void;
+  onUpdate?: (result: ChildResult, info?: NdjsonUpdateInfo) => void;
+}
+
+/** Why onUpdate fired, so consumers (LanePool) can classify the update. */
+export interface NdjsonUpdateInfo {
+  kind: "text" | "turn" | "action";
+  /** Streamed delta for kind="text". */
+  text?: string;
+  /** `name(args)` toolCall summary for kind="action". */
+  action?: string;
+}
+
+/** Max chars of serialized toolCall arguments kept in an action summary. */
+export const TOOL_CALL_ARGS_MAX_CHARS = 80;
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/**
+ * Summarize one assistant content toolCall part as `name(args)` with the
+ * serialized arguments truncated (~80 chars). Accepts both the pi nested
+ * shape `{ type: "toolCall", toolCall: { name, arguments } }` and a flat
+ * `{ type: "toolCall", name, arguments }` fallback.
+ */
+export function toolCallSummary(part: Record<string, unknown>): string {
+  const raw = isRecord(part.toolCall) ? part.toolCall : part;
+  const name = typeof raw.name === "string" && raw.name ? raw.name : "tool";
+  const input = raw.arguments ?? raw.args ?? raw.input;
+  let args = "";
+  if (typeof input === "string") args = input;
+  else if (input !== undefined) {
+    try {
+      args = JSON.stringify(input) ?? "";
+    } catch {
+      args = String(input);
+    }
+  }
+  return `${name}(${truncate(args, TOOL_CALL_ARGS_MAX_CHARS)})`;
 }
 
 /**
@@ -33,7 +71,7 @@ export class NdjsonStreamParser {
   private lastUsage?: NonNullable<AssistantLikeMessage["usage"]>;
   /** True once any usage-bearing event was applied (agent_end fallback guard). */
   private sawUsage = false;
-  private readonly onUpdate?: (result: ChildResult) => void;
+  private readonly onUpdate?: (result: ChildResult, info?: NdjsonUpdateInfo) => void;
 
   /** True once `agent_settled` has been observed (terminal success marker). */
   settled = false;
@@ -97,7 +135,7 @@ export class NdjsonStreamParser {
       const delta = event.assistantMessageEvent.delta ?? "";
       this.finalText += delta;
       this.result.output = this.finalText;
-      this.onUpdate?.(this.result);
+      this.onUpdate?.(this.result, { kind: "text", text: delta });
       return;
     }
 
@@ -118,7 +156,21 @@ export class NdjsonStreamParser {
       if (event.message.usage) {
         this.applyUsageDelta(event.message.usage);
       }
-      this.onUpdate?.(this.result);
+      // Child toolCall capture (EPHEMERAL actions feed): each content part of
+      // type toolCall becomes a `name(args)` summary on result.actions. Fired
+      // AFTER turn/usage/model state is current but BEFORE the turn update, so
+      // consumers see the turn's actions, then the completed turn. Never
+      // persisted anywhere (result.actions is in-memory only).
+      if (Array.isArray(event.message.content)) {
+        for (const part of event.message.content) {
+          if (isRecord(part) && part.type === "toolCall") {
+            const summary = toolCallSummary(part);
+            (this.result.actions ??= []).push(summary);
+            this.onUpdate?.(this.result, { kind: "action", action: summary });
+          }
+        }
+      }
+      this.onUpdate?.(this.result, { kind: "turn" });
       return;
     }
 

@@ -35,8 +35,17 @@ describe("registry: buildAgentCatalog", () => {
     const catalog = buildAgentCatalog({ cwd: "cwd", scope: "both", resolveAgentDirs: testResolver });
     assert.equal(catalog.counts.total, catalog.entries.length);
     assert.equal(catalog.counts.project + catalog.counts.user, catalog.counts.total);
-    assert.ok(catalog.counts.project >= 4); // alpha, beta, broken, nofront, dup(deduped)
+    // broken/nofront/README are skipped (no frontmatter name) -> alpha, beta, dup
+    assert.equal(catalog.counts.project, 3);
     assert.ok(catalog.counts.user >= 1); // gamma (dup deduped away)
+  });
+
+  it("exposes model_class per entry when the card declares it", () => {
+    const catalog = buildAgentCatalog({ cwd: "cwd", scope: "project", resolveAgentDirs: testResolver });
+    const alpha = catalog.entries.find((e) => e.id === "alpha");
+    assert.ok(alpha);
+    assert.equal(alpha.modelClass, "cheap");
+    assert.equal(hasForbiddenBodyKeys(catalog), false);
   });
 
   it("scope project includes only project entries", () => {

@@ -51,6 +51,32 @@ describe("engine/ledger: body-free hashing", () => {
     assert.deepEqual((sanitized.child as Record<string, unknown>).stderrHashes, [sha256("x")]);
     assert.equal((sanitized.child as Record<string, unknown>).ok, true);
   });
+
+  it("P3: keeps numeric scalars under raw-body keys (usage token counters) while hashing string bodies", () => {
+    const sanitized = bodyFreeDelegationLedgerEntry({
+      event: "end",
+      runId: "r9",
+      usage: { turns: 2, input: 1200, output: 340, cacheRead: 0, cacheWrite: 0, cost: 0.0021, contextTokens: 1540 },
+      output: "raw body",
+    }) as Record<string, unknown>;
+    const usage = sanitized.usage as Record<string, unknown>;
+    assert.equal(usage.turns, 2);
+    assert.equal(usage.input, 1200);
+    assert.equal(usage.output, 340, "the output TOKEN COUNTER must survive (P3)");
+    assert.equal(usage.cost, 0.0021);
+    assert.equal(usage.contextTokens, 1540);
+    // A string body under the same key is still hashed away, never stored.
+    assert.deepEqual(sanitized.outputHashes, [sha256("raw body")]);
+    assert.equal("output" in sanitized, false);
+    assert.equal(sanitized.bodyStored, false);
+    assert.equal(hasRawBodyKey(sanitized), false);
+  });
+
+  it("P3: hasRawBodyKey flags only string/array bodies, not numeric counters", () => {
+    assert.equal(hasRawBodyKey({ usage: { output: 5 } }), false);
+    assert.equal(hasRawBodyKey({ output: "body" }), true);
+    assert.equal(hasRawBodyKey({ gateErrors: ["e"] }), true);
+  });
 });
 
 describe("engine/ledger: appendLedgerFile (injectable dir, hash-only)", () => {

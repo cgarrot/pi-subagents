@@ -13,7 +13,7 @@
  *   dirs it wants searched.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import type { AgentScope, ChildThinkingLevel } from "../core/types.js";
 import { parseMemoryScope, type MemoryScope } from "../engine/memory.js";
 
@@ -26,6 +26,8 @@ export interface AgentCard {
   thinking?: ChildThinkingLevel | string;
   /** C5: persistent memory scope (frontmatter `memory: project|local|user`). */
   memory?: MemoryScope;
+  /** Model class hint (frontmatter `model_class`, e.g. cheap/balanced/capable). */
+  modelClass?: string;
   /**
    * C1 nested subagents: strict allowlist (frontmatter `allowed_subagents`,
    * CSV agent names or `all`). An agent NOT on the list is refused — there is
@@ -86,7 +88,10 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentCard[]
       continue;
     }
     const { frontmatter, body } = parseFrontmatter(raw);
-    const name = frontmatter.name ?? basename(fileName, ".md");
+    // Skip .md files WITHOUT a frontmatter `name:` — README.md and other docs
+    // must never surface as agents (the old basename fallback made every
+    // stray .md an agent named after its file).
+    const name = frontmatter.name;
     if (!name) continue;
     const tools = frontmatter.tools
       ?.split(",")
@@ -103,6 +108,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentCard[]
       model: frontmatter.model,
       thinking: frontmatter.thinking,
       memory: parseMemoryScope(frontmatter.memory),
+      modelClass: frontmatter.model_class,
       allowedSubagents: allowedSubagents && allowedSubagents.length > 0 ? allowedSubagents : undefined,
       prompt: body,
       source,

@@ -55,23 +55,27 @@ describe("registry: loadAgentsFromDir", () => {
     assert.deepEqual(alpha.tools, ["read", "grep"]);
     assert.equal(alpha.model, "openai/gpt-4o");
     assert.equal(alpha.thinking, "high");
+    assert.equal(alpha.modelClass, "cheap");
     assert.match(alpha.prompt, /You are Alpha/);
     assert.equal(alpha.source, "project");
     assert.equal(alpha.filePath, join(PROJECT, "alpha.md"));
     assert.equal(alpha.filePath.endsWith(".md"), true);
   });
 
-  it("falls back to basename when frontmatter is broken", () => {
+  it("skips .md files without a frontmatter name (broken fence -> not an agent)", () => {
     const broken = loadAgentsFromDir(PROJECT, "project").find((a) => a.filePath.endsWith("broken.md"));
-    assert.ok(broken);
-    assert.equal(broken.name, "broken");
+    assert.equal(broken, undefined);
   });
 
-  it("falls back to basename when no frontmatter, whole file is prompt", () => {
+  it("skips .md files without frontmatter at all (whole-file docs are not agents)", () => {
     const nofront = loadAgentsFromDir(PROJECT, "project").find((a) => a.filePath.endsWith("nofront.md"));
-    assert.ok(nofront);
-    assert.equal(nofront.name, "nofront");
-    assert.match(nofront.prompt, /whole file is the body/);
+    assert.equal(nofront, undefined);
+  });
+
+  it("skips README.md (documentation, never a delegation agent)", () => {
+    const agents = loadAgentsFromDir(PROJECT, "project");
+    assert.equal(agents.find((a) => a.filePath.endsWith("README.md")), undefined);
+    assert.equal(agents.some((a) => /^readme$/i.test(a.name)), false);
   });
 });
 

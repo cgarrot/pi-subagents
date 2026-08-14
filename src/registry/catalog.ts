@@ -41,6 +41,8 @@ export interface AgentCatalogEntry {
   tools?: string[];
   model?: string;
   thinking?: string;
+  /** Model class hint parsed from the card frontmatter (`model_class`). */
+  modelClass?: string;
   source: "project" | "user";
   filePath: string;
   promptHash: string;
@@ -71,6 +73,7 @@ function toCatalogEntry(card: AgentCard): AgentCatalogEntry {
     tools: card.tools,
     model: card.model,
     thinking: card.thinking,
+    modelClass: card.modelClass,
     source: card.source,
     filePath: card.filePath,
     promptHash: sha256(card.prompt),

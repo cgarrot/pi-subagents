@@ -39,6 +39,26 @@ export interface PiSettingsEnabledModelsOptions {
   userSettingsPath?: string;
 }
 
+/** Same tier paths, reused by the F3 defaultModel reader. */
+export type PiSettingsTierOptions = PiSettingsEnabledModelsOptions;
+
+/** Parsed settings object of one tier; undefined when absent/corrupt. */
+function readSettingsObject(settingsPath: string): Record<string, unknown> | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(settingsPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    // Corrupt JSON: treat the tier as not configured (fall through).
+    return undefined;
+  }
+}
+
 interface TierResult {
   /** True when this tier DEFINES enabledModels (array value, possibly empty). */
   defined: boolean;
@@ -47,21 +67,9 @@ interface TierResult {
 
 /** Read `enabledModels` from one settings file; never throws. */
 function readTier(settingsPath: string): TierResult {
-  let raw: string;
-  try {
-    raw = readFileSync(settingsPath, "utf8");
-  } catch {
-    return { defined: false };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    // Corrupt JSON: treat the tier as not configured (fall through).
-    return { defined: false };
-  }
-  if (typeof parsed !== "object" || parsed === null) return { defined: false };
-  const value = (parsed as Record<string, unknown>).enabledModels;
+  const parsed = readSettingsObject(settingsPath);
+  if (!parsed) return { defined: false };
+  const value = parsed.enabledModels;
   if (!Array.isArray(value)) return { defined: false };
   const list = value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
   return { defined: true, list };
@@ -86,4 +94,25 @@ export function createPiSettingsEnabledModelsReader(
       return undefined;
     },
   };
+}
+
+/** Read a non-empty trimmed `defaultModel` string from one tier; never throws. */
+function readDefaultModelTier(settingsPath: string): string | undefined {
+  const parsed = readSettingsObject(settingsPath);
+  const value = parsed?.defaultModel;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * F3 parent-model fallback: read the pi `defaultModel` from the same two
+ * settings tiers as `enabledModels`, with PROJECT priority. Returns undefined
+ * when neither tier defines a usable string (the engine then dispatches
+ * without a parent model — no inheritance, previous behavior). Never throws.
+ */
+export function readPiDefaultModel(repoRoot: string, opts: PiSettingsTierOptions = {}): string | undefined {
+  const projectSettingsPath = opts.projectSettingsPath ?? join(repoRoot, ".pi", "settings.json");
+  const userSettingsPath = opts.userSettingsPath ?? join(homedir(), ".pi", "agent", "settings.json");
+  return readDefaultModelTier(projectSettingsPath) ?? readDefaultModelTier(userSettingsPath);
 }

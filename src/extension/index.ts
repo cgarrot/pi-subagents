@@ -10,12 +10,28 @@
  */
 
 import { registerCommands } from "./commands.js";
-import { SubagentsEventBus } from "./events.js";
+import { SubagentsEventBus, SUBAGENTS_EVENT_CHANNEL } from "./events.js";
 import { FleetView } from "./fleet.js";
 import { SubagentsHud } from "./hud.js";
 import type { ExtensionAPI, SessionContext } from "./pi-types.js";
 import { registerSubagentsRpc } from "./rpc.js";
 import { createSubagentsRuntime, registerTools, type SubagentsRuntime } from "./tools.js";
+
+/**
+ * Lifecycle channels that flip widget content (start/terminal transitions).
+ * The widgets ALSO keep the shared 2s ticker as a safety net, but these
+ * subscriptions make the refresh EVENT-driven: a settle repaints immediately
+ * instead of waiting for the next polling tick (the previously dead
+ * `onLocalChange` hook is finally fed). Absent `pi.events` degrades to
+ * polling-only.
+ */
+const WIDGET_REFRESH_CHANNELS = [
+  SUBAGENTS_EVENT_CHANNEL.started,
+  SUBAGENTS_EVENT_CHANNEL.completed,
+  SUBAGENTS_EVENT_CHANNEL.failed,
+  SUBAGENTS_EVENT_CHANNEL.aborted,
+  SUBAGENTS_EVENT_CHANNEL.escalated,
+] as const;
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
   let runtime: SubagentsRuntime | null = null;
@@ -41,6 +57,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
     }
     runtime = createSubagentsRuntime(ctx.cwd, {
       onLedger: (entry) => eventBus.handleLedgerEntry(entry),
+      // F3: prefer the live session model when the host exposes it on the
+      // context; otherwise the runtime falls back to the pi settings
+      // defaultModel reader (project over global) inside createSubagentsRuntime.
+      parentModel: ctx.model,
     });
     return runtime;
   };
@@ -65,6 +85,29 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
       fleet.attach();
     } catch {
       // best effort (I10): FleetView failure must not affect tools/commands
+    }
+    // Event-driven refresh: repaint the widgets the moment a run lifecycle
+    // event lands on the bus (no stale 'running' row until the next tick).
+    if (pi.events) {
+      const refreshWidgets = (): void => {
+        try {
+          hud?.onLocalChange();
+        } catch {
+          // best effort (I10)
+        }
+        try {
+          fleet?.onLocalChange();
+        } catch {
+          // best effort (I10)
+        }
+      };
+      for (const channel of WIDGET_REFRESH_CHANNELS) {
+        try {
+          pi.events.on(channel, refreshWidgets);
+        } catch {
+          // best effort (I10): a failing bus must not break session start
+        }
+      }
     }
   });
 

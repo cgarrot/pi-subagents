@@ -59,4 +59,11 @@ describe("lanes/args: buildChildFlags", () => {
     const flags = buildChildFlags({ sessionPath: "/sessions/x.jsonl" });
     assert.deepEqual(flags, ["--session", "/sessions/x.jsonl"]);
   });
+
+  it("never emits --session-offset (pi resumes the session file as-is)", () => {
+    // pi >= 0.84 rejects the unknown option (`Error: Unknown option:
+    // --session-offset`, exit 1) — continuations must pass --session only.
+    const flags = buildChildFlags({ sessionPath: "/sessions/continue.jsonl", model: "openai/gpt-5.5" });
+    assert.ok(!flags.includes("--session-offset"));
+  });
 });

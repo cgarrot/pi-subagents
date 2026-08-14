@@ -89,6 +89,12 @@ export const DELEGATE_PARAMS: JsonSchema = {
     child_goal: CHILD_GOAL_PARAMS,
     allowed_paths: { type: "array", items: { type: "string" }, description: ALLOWED_PATHS_DESC },
     forbidden_paths: { type: "array", items: { type: "string" }, description: FORBIDDEN_PATHS_DESC },
+    feed: {
+      type: "boolean",
+      description:
+        "Stream compact live child action/turn lines into the parent conversation while the delegation runs (via the engine child-event feed). Default true; set false for silent dispatch.",
+      default: true,
+    },
   },
   additionalProperties: false,
 };
@@ -122,12 +128,31 @@ export const DELEGATE_TASK_PARAMS: JsonSchema = {
     childGoal: CHILD_GOAL_PARAMS,
     run_in_background: { type: "boolean", description: "Run this delegate_task in active-session background when enabled by parent. Returns runId immediately; no daemon/auto-start.", default: false },
     runInBackground: { type: "boolean", description: "Safe alias for run_in_background. Conflicts with canonical values are blocked before child launch." },
+    fresh: {
+      type: "boolean",
+      description:
+        "Fresh per-run session file (<agent>-<runId>.jsonl). Default true, so successive runs never share a session. Set false to reuse the agent's stable lane session (legacy behavior). Chain (shared lane) and continue_run (reuses the original session) are unaffected.",
+      default: true,
+    },
     load_skills: { type: "array", items: { type: "string" }, description: "Reserved skill list. Default empty." },
     loadSkills: { type: "array", items: { type: "string" }, description: "Safe alias for load_skills; still reserved by the P0 gate when non-empty." },
     cwd: { type: "string", description: "Override cwd for this child Pi process. Must stay inside repo." },
     scope: AGENT_SCOPE_SCHEMA,
     model: { type: "string", description: "Exceptional explicit model override for this child. Normally omit to use the parent/session default." },
     thinking: THINKING_LEVEL_SCHEMA,
+    isolation: {
+      type: "string",
+      enum: ["none", "worktree"],
+      description:
+        "Child filesystem isolation. none (default): the child runs in the repo working tree. worktree: the child runs in a disposable detached git worktree that is auto-cleaned after the run (requires a git repo with a commit).",
+      default: "none",
+    },
+    feed: {
+      type: "boolean",
+      description:
+        "Stream compact live child action/turn lines into the parent conversation while the task runs. Default true; set false for silent dispatch.",
+      default: true,
+    },
   },
   required: ["agent", "task", "context"],
   additionalProperties: false,

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   abortDelegationRun,
+  classifyChildFailure,
+  detectProviderQuotaFailure,
   finishDelegationRun,
   makeRunId,
   markRunRunning,
@@ -93,5 +95,44 @@ describe("engine/runs: lifecycle queued -> running -> terminal", () => {
     assert.equal(outputHashOf("hello"), outputHashOf("hello"));
     assert.notEqual(outputHashOf("hello"), outputHashOf("world"));
     assert.equal(outputHashOf(""), undefined);
+  });
+});
+
+const USAGE = { turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0 };
+
+const classifyBase = { agent: "alpha", task: "t", exitCode: 1, output: "", stderr: "", usage: USAGE };
+
+describe("engine/runs: classifyChildFailure (F4 provider_quota)", () => {
+  it("classifies a usage-limit stderr crash as provider_quota (not child_runtime)", () => {
+    assert.equal(
+      classifyChildFailure({ ...classifyBase, stderr: "Codex error: The usage limit has been reached" }),
+      "provider_quota",
+    );
+  });
+
+  it("matches rate limit / quota case-insensitively in stderr, output, or errorMessage", () => {
+    assert.equal(classifyChildFailure({ ...classifyBase, stderr: "RATE LIMIT exceeded" }), "provider_quota");
+    assert.equal(classifyChildFailure({ ...classifyBase, output: "provider Quota exhausted" }), "provider_quota");
+    assert.equal(classifyChildFailure({ ...classifyBase, errorMessage: "rate limit hit" }), "provider_quota");
+  });
+
+  it("classifies a quota-named gate failure (empty output, exit 0) as provider_quota, not output_gate", () => {
+    assert.equal(
+      classifyChildFailure({ ...classifyBase, exitCode: 0, gatePassed: false, stderr: "usage limit reached for today" }),
+      "provider_quota",
+    );
+  });
+
+  it("does not classify a successful result whose output merely mentions quota", () => {
+    assert.equal(
+      classifyChildFailure({ ...classifyBase, exitCode: 0, gatePassed: true, output: "we discussed the quota policy" }),
+      undefined,
+    );
+    assert.equal(detectProviderQuotaFailure({ ...classifyBase, exitCode: 0, gatePassed: true, stderr: "quota talk" }), false);
+  });
+
+  it("keeps child_runtime for a plain crash and output_gate for a plain gate failure", () => {
+    assert.equal(classifyChildFailure({ ...classifyBase, stderr: "boom" }), "child_runtime");
+    assert.equal(classifyChildFailure({ ...classifyBase, exitCode: 0, gatePassed: false, gateErrors: ["empty"] }), "output_gate");
   });
 });

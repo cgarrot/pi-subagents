@@ -37,6 +37,19 @@ export interface ToolResult {
 export interface SessionContext {
   cwd: string;
   hasUI?: boolean;
+  /**
+   * F3: current session model WHEN the host exposes it on the context. Two
+   * shapes: pi >= 0.84 exposes the live Model OBJECT `{ provider, id }`
+   * (pi types.d.ts `Model<any>`); other hosts may pass a `"provider/model"`
+   * (or bare id) STRING. The adapter normalizes both to a plain
+   * `"provider/id"` string before any engine use (normalizeParentModelInput
+   * in tools.ts) — object values must NEVER reach `.trim()` directly.
+   * Optional: hosts that do not provide it keep full functionality — the
+   * subagents runtime then resolves the parent model from the pi settings
+   * `defaultModel` (project `.pi/settings.json` over the global
+   * `~/.pi/agent/settings.json`) via an injectable reader.
+   */
+  model?: string | { provider: string; id: string };
   ui: {
     notify(message: string, opts?: { level?: string }): void;
     /** Footer-widget above the editor; string[] is the SAFE form only. */

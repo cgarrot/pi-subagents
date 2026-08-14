@@ -15,14 +15,14 @@
  */
 
 import { readFileSync } from "node:fs";
-import { listDelegationRuns, statusIcon, summarizeDelegations } from "../engine/monitor.js";
-import { abortDelegationRun, delegationDurationMs, type DelegationRunStatus, type DelegationRunView } from "../engine/runs.js";
+import { compactTokens, formatDurationMs, listDelegationRuns, statusIcon, summarizeDelegations } from "../engine/monitor.js";
+import { abortDelegationRun, delegationDurationMs, isTerminalStatus, type DelegationRunStatus, type DelegationRunView } from "../engine/runs.js";
 import type { GetRuntime } from "./tools.js";
+import { WidgetPainter, widgetTicker, type WidgetTicker } from "./widget-refresh.js";
 import type { SessionContext, WidgetContent, WidgetKey } from "./pi-types.js";
 
 export const FLEET_WIDGET_ID: WidgetKey = "pi-subagents-fleet";
 export const FLEET_STATUS_ID = "subagents-fleet";
-export const FLEET_REFRESH_MS = 2_000;
 export const FLEET_MAX_RUNS = 8;
 export const PEEK_MAX_LINES = 20;
 export const PEEK_MAX_BYTES = 4_000;
@@ -35,15 +35,33 @@ export interface FleetRunLine {
   tokens: number;
   cost: number;
   durationMs: number;
+  /** True while `tokens` is the LIVE context snapshot (mid-run estimate ≈). */
+  live: boolean;
+  /** Live model when the turn feed carried one (settled runs read run.model). */
+  model?: string;
 }
 
-/** Extract the token + cost summary from a run's usage (0 when absent). */
-export function runUsageSummary(run: DelegationRunView): { tokens: number; cost: number } {
+/**
+ * Extract the token + cost summary from a run's usage. Settled usage
+ * (input+output > 0) wins; an ACTIVE run with a live turn snapshot falls
+ * back to `liveUsage.contextTokens` (marked live — cost unknown mid-run);
+ * a settled usage with zero in/out but a context snapshot shows the snapshot.
+ */
+export function runUsageSummary(run: DelegationRunView): { tokens: number; cost: number; live: boolean } {
   const usage = run.usage;
-  if (!usage) return { tokens: 0, cost: 0 };
-  const tokens = (usage.input ?? 0) + (usage.output ?? 0);
-  const cost = typeof usage.cost === "number" ? usage.cost : 0;
-  return { tokens, cost };
+  if (usage && (usage.input > 0 || usage.output > 0)) {
+    const tokens = usage.input + usage.output;
+    const cost = typeof usage.cost === "number" ? usage.cost : 0;
+    return { tokens, cost, live: false };
+  }
+  const live = run.liveUsage;
+  if (!isTerminalStatus(run.status) && live && (live.turns > 0 || (live.contextTokens ?? 0) > 0)) {
+    return { tokens: live.contextTokens ?? 0, cost: 0, live: true };
+  }
+  if (usage && (usage.turns > 0 || usage.contextTokens > 0)) {
+    return { tokens: usage.contextTokens, cost: typeof usage.cost === "number" ? usage.cost : 0, live: false };
+  }
+  return { tokens: 0, cost: 0, live: false };
 }
 
 /** Build the active-run rows for the fleet widget (bounded to FLEET_MAX_RUNS). */
@@ -54,7 +72,7 @@ export function fleetRunLines(getRuntime: GetRuntime, now: number = Date.now()):
     .filter((run) => run.status === "queued" || run.status === "running")
     .slice(0, FLEET_MAX_RUNS)
     .map((run) => {
-      const { tokens, cost } = runUsageSummary(run);
+      const { tokens, cost, live } = runUsageSummary(run);
       return {
         id: run.id,
         agent: run.agent,
@@ -62,6 +80,8 @@ export function fleetRunLines(getRuntime: GetRuntime, now: number = Date.now()):
         tokens,
         cost,
         durationMs: delegationDurationMs(run, now),
+        live,
+        model: run.liveUsage?.model ?? run.model,
       };
     });
 }
@@ -74,9 +94,13 @@ export function renderFleetLines(getRuntime: GetRuntime, now: number = Date.now(
   if (rows.length === 0) return ["fleet: no active runs"];
   const lines = [`fleet: ${rows.length} active`];
   for (const row of rows) {
-    lines.push(
-      `${statusIcon(row.status)} ${row.agent} ${row.status} · ${row.tokens} tok · $${row.cost.toFixed(4)} · ${row.durationMs}ms`,
-    );
+    const parts = [`${statusIcon(row.status)} ${row.agent} ${row.status}`];
+    // Live rows carry the ≈ estimate marker (settle replaces it with the
+    // authoritative input+output totals); zero-token rows omit the segment.
+    if (row.tokens > 0) parts.push(`${row.live ? "≈" : ""}${compactTokens(row.tokens)} tok`);
+    if (row.cost > 0) parts.push(`$${row.cost.toFixed(4)}`);
+    parts.push(formatDurationMs(row.durationMs));
+    lines.push(parts.join(" · "));
   }
   return lines;
 }
@@ -122,26 +146,30 @@ export function stopRun(getRuntime: GetRuntime, runId: string): string {
   return `run ${runId} already ${run.status}`;
 }
 
-/** Small FleetView owner: attaches a periodic widget refresh to a session ctx. */
+/** Small FleetView owner: diffed refresh on the shared ticker (anti-flicker). */
 export class FleetView {
-  private timer?: NodeJS.Timeout;
+  private unsubscribe?: () => void;
   private readonly ctx: SessionContext;
+  private readonly painter: WidgetPainter;
 
-  constructor(ctx: SessionContext, private readonly getRuntime: GetRuntime) {
+  constructor(
+    ctx: SessionContext,
+    private readonly getRuntime: GetRuntime,
+    private readonly ticker: WidgetTicker = widgetTicker,
+  ) {
     this.ctx = ctx;
+    this.painter = new WidgetPainter(ctx, FLEET_WIDGET_ID, FLEET_STATUS_ID);
   }
 
   attach(): void {
     this.refresh();
-    this.timer = setInterval(() => this.refresh(), FLEET_REFRESH_MS);
-    this.timer.unref();
+    this.unsubscribe = this.ticker.subscribe(() => this.refresh());
   }
 
   detach(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = undefined;
-    this.ctx.ui.setWidget?.(FLEET_WIDGET_ID, undefined);
-    this.ctx.ui.setStatus?.(FLEET_STATUS_ID, undefined);
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.painter.clear();
   }
 
   /** Refresh immediately when a run completes/fails (event hook). */
@@ -150,13 +178,15 @@ export class FleetView {
   }
 
   private refresh(): void {
-    const rt = this.getRuntime();
-    if (!rt) return;
-    this.ctx.ui.setWidget?.(FLEET_WIDGET_ID, renderFleetLines(this.getRuntime));
-    const summary = summarizeDelegations(rt.engine.monitor);
-    this.ctx.ui.setStatus?.(
-      FLEET_STATUS_ID,
-      summary.running > 0 ? `${summary.running} active run(s)` : "idle",
-    );
+    try {
+      const rt = this.getRuntime();
+      if (!rt) return;
+      this.painter.paintWidget(renderFleetLines(this.getRuntime));
+      const summary = summarizeDelegations(rt.engine.monitor);
+      const active = summary.queued + summary.running + summary.steered;
+      this.painter.paintStatus(active > 0 ? `${active} active run(s)` : "idle");
+    } catch {
+      // best effort (I10): FleetView failure must not affect tools/commands
+    }
   }
 }

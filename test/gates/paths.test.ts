@@ -40,6 +40,13 @@ describe("validateAllowedPathPolicy", () => {
     const errors = validateAllowedPathPolicy([".", "./"], "allowed", repoRoot);
     assert.ok(errors.some((e) => e.includes("broad repo roots are not allowed")), JSON.stringify(errors));
   });
+  it("F7: quotes the offending path so a broad root '.' never renders as '..'", () => {
+    const errors = validateAllowedPathPolicy(["."], "allowed_paths", repoRoot);
+    assert.ok(errors.length > 0, "a broad root must be rejected");
+    const msg = errors.join("\n");
+    assert.ok(msg.includes("stay inside repo root: `.`"), `path must be backtick-quoted in the message: ${msg}`);
+    assert.ok(!msg.includes("repo root: .."), `ambiguous unquoted '..' form must be gone: ${msg}`);
+  });
   it("rejects traversal segments", () => {
     const errors = validateAllowedPathPolicy(["packages/../.."], "allowed", repoRoot);
     assert.ok(errors.some((e) => e.includes("path traversal segments")), JSON.stringify(errors));

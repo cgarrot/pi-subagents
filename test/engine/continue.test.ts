@@ -75,7 +75,7 @@ function failThenSucceed(recorded: { args: string[][] }): SpawnFn {
 }
 
 describe("engine/dispatch: continueRun", () => {
-  it("reuses the same sessionPath, links continuedFromRunId, increments turnCount, and passes the byte-offset", async () => {
+  it("reuses the same sessionPath, links continuedFromRunId, and increments turnCount", async () => {
     const dir = tempRepo("reuse");
     const recorded = { args: [] as string[][] };
     try {
@@ -87,10 +87,7 @@ describe("engine/dispatch: continueRun", () => {
       assert.ok(firstRun.sessionPath, "first run must record a sessionPath");
       assert.equal(firstRun.turnCount, undefined, "a fresh run has no turnCount");
 
-      // Write known content to the session file so the offset is observable.
       const sessionPath = firstRun.sessionPath!;
-      const known = "known-session-content-12345";
-      writeFileSync(sessionPath, known, "utf8");
 
       const continued = await engine.continueRun(firstRun.id, contractTask("continue"), { outputContract: "base.v1" });
       assert.equal(continued.exitCode, 0);
@@ -101,14 +98,14 @@ describe("engine/dispatch: continueRun", () => {
       assert.equal(contRun.turnCount, 2, "turnCount must increment from the original");
       assert.equal(contRun.sessionPath, sessionPath, "continue must reuse the SAME sessionPath");
 
-      // The continue spawn must carry --session <same path> and --session-offset <size>.
+      // The continue spawn must carry --session <same path>; pi resumes the
+      // session file AS-IS — the --session-offset flag does NOT exist in
+      // pi >= 0.84 (Unknown option, exit 1) and must never be passed.
       const contArgs = recorded.args[1]!;
       const sessionIdx = contArgs.indexOf("--session");
       assert.ok(sessionIdx >= 0, "continue args must include --session");
       assert.equal(contArgs[sessionIdx + 1], sessionPath);
-      const offsetIdx = contArgs.indexOf("--session-offset");
-      assert.ok(offsetIdx >= 0, "continue args must include --session-offset");
-      assert.equal(Number(contArgs[offsetIdx + 1]), Buffer.byteLength(known), "offset must equal the session file size");
+      assert.ok(!contArgs.includes("--session-offset"), "continue args must NOT include --session-offset");
       engine.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

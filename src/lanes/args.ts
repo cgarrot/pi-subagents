@@ -38,26 +38,18 @@ export interface ChildFlagsInput {
   thinking?: string;
   tools?: string;
   agentPrompt?: string;
-  /**
-   * Byte offset into the session file to resume from (continue). When set, the
-   * child is told to treat the session file as already-known up to this offset
-   * so previously consumed content is NOT re-fed. Mirrors the reference
-   * `persistedSessionBaseOffset = getSessionFileSize(sessionFile)` mechanism.
-   */
-  sessionOffset?: number;
 }
 
 /**
  * Build the child flags appended after the isolated prefix: `--session <path>`
- * plus optional `--model`, `--thinking`, `--tools`, `--append-system-prompt`,
- * and `--session-offset <n>` when a continuation byte-offset is supplied.
+ * plus optional `--model`, `--thinking`, `--tools`, `--append-system-prompt`.
+ * NO `--session-offset`: pi (>= 0.84) resumes a `--session` file AS-IS and
+ * rejects the unknown option (`Error: Unknown option: --session-offset`,
+ * exit 1) — the continuation byte-offset stays parent-side metadata only.
  * The task itself is NOT placed here — v1 injects the task via stdin one-shot.
  */
 export function buildChildFlags(input: ChildFlagsInput): string[] {
   const args = ["--session", input.sessionPath];
-  if (input.sessionOffset !== undefined && input.sessionOffset > 0) {
-    args.push("--session-offset", String(input.sessionOffset));
-  }
   if (input.model) args.push("--model", input.model);
   if (input.thinking) args.push("--thinking", input.thinking);
   if (input.tools) args.push("--tools", input.tools);

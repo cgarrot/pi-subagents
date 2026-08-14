@@ -1,22 +1,30 @@
 {
   "name": "pi-subagents-extension",
-  "version": "0.1.0",
-  "description": "Standalone, modular extraction of the ZOB harness subagents system (delegate_agent/delegate_task) — pure core with no Pi import, hot session pool (lanes), model routing with fallback, ported gates. Mirror of the pi-mesh pattern.",
+  "version": "1.0.0",
+  "description": "Standalone subagent delegation for Pi — six-part contracts, path-scoped gates, model-class routing with honest fallback, live action feed, hash-only ledger. Zero runtime dependencies. Published as pi-subagents-extension on npm (the plain pi-subagents name is taken by another project).",
   "type": "module",
   "license": "MIT",
-  "author": "Clément Garrot <clement.garrot.dev@gmail.com>",
+  "author": "Clément Garrot <clement.garrot.dev@gmail.com> (https://github.com/cgarrot)",
   "keywords": [
     "pi",
     "pi-package",
     "pi-extension",
     "subagents",
     "delegation",
-    "lanes",
+    "agents",
     "multi-agent",
     "extension"
   ],
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cgarrot/pi-subagents.git"
+  },
+  "homepage": "https://github.com/cgarrot/pi-subagents#readme",
+  "bugs": {
+    "url": "https://github.com/cgarrot/pi-subagents/issues"
   },
   "pi": {
     "extensions": [
@@ -32,8 +40,14 @@
     "!dist/test",
     "index.ts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "skills",
+    "agents",
+    "child"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "subagents": "dist/src/cli/subagents.js"
   },

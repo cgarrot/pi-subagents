@@ -18,7 +18,7 @@
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { ChildResult } from "../core/types.js";
+import type { ChildProgressEvent, ChildResult } from "../core/types.js";
 import { safeFileStem } from "../core/paths.js";
 import {
   DEFAULT_GRACE_TURNS,
@@ -81,14 +81,9 @@ export interface LaneDispatchInput {
   /**
    * Explicit session path override. When set, dispatch uses this exact path
    * instead of the lane's stable session path (continue reuses the original
-   * run's session file).
+   * run's session file — pi resumes the session AS-IS, no offset flag).
    */
   sessionPath?: string;
-  /**
-   * Byte offset into the session file to resume from (continue). Passed to the
-   * child args so already-known content is not re-fed.
-   */
-  sessionOffset?: number;
   /**
    * B3 graceful turn limit: max assistant turns (ndjson message_end count)
    * before the soft wrap-up steer. Undefined/non-positive = unlimited.
@@ -112,6 +107,13 @@ export interface LaneDispatchInput {
    * pool's sessionDir (parent side).
    */
   cwd?: string;
+  /**
+   * Streaming child progress feed: fired per assistant turn (message_end),
+   * per captured child toolCall (`name(args)` summary) and per completed
+   * assistant text. runId/agent are filled by the pool from the dispatch
+   * input. In-memory only — never persisted to ledger/attestations.
+   */
+  onChildEvent?: (event: ChildProgressEvent) => void;
 }
 
 export interface LanePoolOptions {
@@ -291,7 +293,6 @@ export class LanePool {
           thinking: input.thinking,
           tools: input.tools,
           agentPrompt: input.agentPrompt,
-          sessionOffset: input.sessionOffset,
         }),
       ];
       const spawnInput: SpawnInput = {
@@ -350,7 +351,39 @@ export class LanePool {
         }
       };
 
-      const parser = new NdjsonStreamParser(result, { onUpdate: enforceTurnLimit });
+      /**
+       * Child progress feed (in-memory ChildProgressEvent stream). runId falls
+       * back to the lane when the dispatch carries none; agent is the lane id.
+       */
+      const emitChildEvent = (kind: ChildProgressEvent["kind"], detail: string): void => {
+        if (!input.onChildEvent) return;
+        const contextTokens = result.usage.contextTokens;
+        input.onChildEvent({
+          runId: input.runId ?? lane,
+          agent: lane,
+          kind,
+          detail,
+          turns: result.usage.turns,
+          model: result.model,
+          contextTokens: contextTokens > 0 ? contextTokens : undefined,
+        });
+      };
+
+      const parser = new NdjsonStreamParser(result, {
+        onUpdate: (updated, info) => {
+          enforceTurnLimit();
+          if (!input.onChildEvent || !info) return;
+          if (info.kind === "action" && info.action) {
+            emitChildEvent("action", info.action);
+            return;
+          }
+          if (info.kind === "turn") {
+            emitChildEvent("turn", `assistant turn ${updated.usage.turns}`);
+            const preview = updated.output.trim();
+            if (preview) emitChildEvent("text", preview.length > 160 ? `${preview.slice(0, 160)}…` : preview);
+          }
+        },
+      });
       let wasAborted = false;
 
       child.stdout.setEncoding("utf8");

@@ -20,15 +20,20 @@ import { statSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   AgentScope,
+  ChildChangedPathRef,
+  ChildProgressEvent,
   ChildResult,
   DelegationDetails,
   DelegationFailureKind,
 } from "../core/types.js";
 import { join, relative, resolve } from "node:path";
 import { sha256 } from "../core/hashing.js";
+import { PROVIDER_QUOTA_MESSAGE } from "../core/formatting.js";
 import { clampMaxSubagentDepth, loadConfig } from "../shared/config.js";
 import {
   inferOutputContract,
+  getOutputContractDefinitions,
+  getOutputContractFinalMarker,
   resolveChildCwd,
   validateAllowedPathPolicy,
   validateDelegationWriteScope,
@@ -47,11 +52,13 @@ import {
   type ModelByClassMap,
   type VerifiedModelCatalog,
 } from "../models/index.js";
+import { buildProviderExtensionResolver, providerOfModel, type ProviderExtensionResolver } from "../models/provider-extensions.js";
 import {
   cleanupWorktree,
   createWorktree,
-  validateWorktreeIsolation,
+  validateWorktreeIsolationDetailed,
   type WorktreeChildResult,
+  type WorktreeErrorKind,
   type WorktreeRunOutcome,
 } from "../lanes/worktree.js";
 import {
@@ -64,6 +71,7 @@ import {
 } from "../lanes/index.js";
 import {
   classifyChildFailure,
+  detectProviderQuotaFailure,
   finishDelegationRun,
   isTerminalStatus,
   makeRunId,
@@ -158,6 +166,22 @@ function classifyConfigOrPreflight(errors: readonly string[]): DelegationFailure
   return errors.some((error) => /unknown agent|unknown output contract|available:/i.test(error)) ? "config" : "preflight";
 }
 
+/**
+ * Literal-marker instruction APPENDED to the agent system prompt so real
+ * children know the output-contract gates require exact final markers
+ * (real-run test 3: 5/7 FAILED with exit 0 and correct deliverables purely
+ * because the markers were never requested from the child).
+ */
+function buildOutputContractPromptLine(outputContract: string): string {
+  const finalMarker = getOutputContractFinalMarker(outputContract) ?? "deliverable_delivered: yes";
+  const required = getOutputContractDefinitions().find((definition) => definition.id === outputContract)?.required ?? [];
+  return (
+    `FINAL OUTPUT CONTRACT: your final message MUST end with the literal section markers required by output contract ${outputContract} ` +
+    `— the final line must be exactly \`${finalMarker}\` and the required sections must appear literally: ${required.join(", ")} ` +
+    "(see tool result requirements)."
+  );
+}
+
 export interface DispatchEngineOptions {
   repoRoot: string;
   monitor?: DelegationMonitorState;
@@ -169,6 +193,14 @@ export interface DispatchEngineOptions {
   resolveAgentDirs?: ResolveAgentDirs;
   scope?: AgentScope;
   verifiedCatalog?: VerifiedModelCatalog;
+  /**
+   * F2: injectable verified-catalog source evaluated at EVERY preflight, so a
+   * `<repoRoot>/.pi/model-catalog.json` created or updated mid-session is
+   * honored without rebuilding the engine. When set it wins over the static
+   * `verifiedCatalog` value. The reader must never throw; a throwing reader
+   * is reported as a catalog read error (the override stays blocked).
+   */
+  verifiedCatalogReader?: () => VerifiedModelCatalog;
   classModels?: ModelByClassMap;
   parentModel?: string;
   /**
@@ -210,6 +242,25 @@ export interface DispatchEngineOptions {
    * `.subagents/config.json` or `SUBAGENTS_MAX_DEPTH`, default 2). 0/1 = off.
    */
   maxSubagentDepth?: number;
+  /**
+   * P2 provider-extension resolver: provider id -> extension entry path.
+   * Children spawn `--no-extensions`; when the RESOLVED child model has a
+   * provider with a known extension, the spawn argv gains `-e <path>` (a
+   * custom-provider child like `ollama-cloud/...` otherwise crashes with
+   * 'Model not found'). Injectable for tests; the default resolver is built
+   * ONCE from the shared config — `.subagents/config.json`
+   * `providerExtensions` map over the built-in
+   * `ollama-cloud` -> `~/pi-provider-ollama-cloud/src/index.ts` default — with
+   * every path existsSync-guarded (a path that does not exist is never
+   * injected). A throwing resolver degrades to no extension, never a crash.
+   */
+  providerExtensions?: ProviderExtensionResolver;
+  /**
+   * Engine-level streaming child progress feed: ChildProgressEvent per
+   * assistant turn / captured toolCall / completed text of every dispatched
+   * run. Overridable per run (per-run option wins). In-memory only.
+   */
+  onChildEvent?: (event: ChildProgressEvent) => void;
 }
 
 export interface SingleDispatchOptions {
@@ -232,8 +283,6 @@ export interface SingleDispatchOptions {
   scope?: AgentScope;
   /** Explicit session path override (continue reuses the original run's session file). */
   sessionPath?: string;
-  /** Byte offset into the session file to resume from (continue). */
-  sessionOffset?: number;
   /** B3 per-run override: max turns before the soft wrap-up steer (wins over engine default). */
   maxTurns?: number;
   /** B3 per-run override: grace turns before the hard abort (wins over engine default). */
@@ -276,6 +325,23 @@ export interface SingleDispatchOptions {
    * < 2 (0/1 = off).
    */
   nested?: NestedDispatchOptions | true;
+  /**
+   * F8: fresh per-run session (default TRUE for single/parallel). Each run
+   * gets its OWN lane/session file `<agent>-<runId>.jsonl`, so successive
+   * dispatches to the same agent never stack onto one shared session
+   * (context-bleed fix). Continuity paths are structural and unaffected:
+   * chain shares an explicit lane and continue_run reuses the original run's
+   * explicit sessionPath (the pool's sessionPath override wins over the
+   * lane). `fresh: false` restores the legacy stable agent-named lane
+   * (`<agent>.jsonl`); an explicit `lane` always wins over this flag.
+   */
+  fresh?: boolean;
+  /**
+   * Per-run streaming child progress feed (wins over the engine-level
+   * onChildEvent). Fired per assistant turn / captured toolCall / completed
+   * text with runId + agent filled by the engine. In-memory only.
+   */
+  onChildEvent?: (event: ChildProgressEvent) => void;
 }
 
 /** Options for `continueRun`: the run id to continue plus single-run options. */
@@ -306,6 +372,8 @@ export interface ParallelDispatchOptions {
   concurrency?: number;
   parentToolCallId?: string;
   source?: DelegationRunSource;
+  /** Batch-level child progress feed, forwarded to every task's run (per-run option wins over engine). */
+  onChildEvent?: (event: ChildProgressEvent) => void;
 }
 
 export interface ChainStepInput {
@@ -324,6 +392,8 @@ export interface ChainDispatchOptions {
   parentToolCallId?: string;
   source?: DelegationRunSource;
   lane?: string;
+  /** Chain-level child progress feed, forwarded to every step's run (per-run option wins over engine). */
+  onChildEvent?: (event: ChildProgressEvent) => void;
 }
 
 /** Outcome of the preflight gate: either a launchable resolution or blocking errors. */
@@ -343,7 +413,7 @@ type PreflightOutcome =
       /** C5 memory block appended to the agent system prompt (undefined = none). */
       memoryBlock?: string;
     }
-  | { ok: false; failureKind: DelegationFailureKind; errors: readonly string[]; agentName: string; cwd: string };
+  | { ok: false; failureKind: DelegationFailureKind; errors: readonly string[]; agentName: string; cwd: string; /** C6 classified worktree gate failure (detail for `details`, clean errors). */ worktreeError?: { kind: WorktreeErrorKind; detail: string } };
 
 /**
  * The final engine assembly. Owns a bounded monitor, a lazily-created LanePool
@@ -408,6 +478,7 @@ export class DispatchEngine {
   }
 
   private nestedConfig?: { maxDepth: number; agentsDir: string };
+  private providerExtensionResolver?: ProviderExtensionResolver;
 
   /** C1 config: max depth (clamped 0..4) + absolute agents dir, memoized. */
   private loadNestedConfig(): { maxDepth: number; agentsDir: string } {
@@ -441,6 +512,29 @@ export class DispatchEngine {
       [NESTED_MAX_DEPTH_ENV]: String(maxDepth),
       [NESTED_AGENTS_DIR_ENV]: agentsDir,
     };
+  }
+
+  /**
+   * P2: resolve the provider extension (`-e`) for the child's EFFECTIVE
+   * model. Injectable resolver wins; the lazy default is built once from the
+   * shared config (providerExtensions map + existsSync-guarded ollama-cloud
+   * default). Builtin/no-slash models and unknown providers get undefined; a
+   * throwing resolver degrades to undefined — never a dispatch crash.
+   */
+  private resolveProviderExtension(model: string | undefined): string | undefined {
+    const provider = providerOfModel(model);
+    if (!provider) return undefined;
+    if (!this.providerExtensionResolver) {
+      this.providerExtensionResolver =
+        this.options.providerExtensions ??
+        buildProviderExtensionResolver(loadConfig(this.repoRoot).providerExtensions);
+    }
+    try {
+      const extension = this.providerExtensionResolver(provider);
+      return extension && extension.trim() !== "" ? extension : undefined;
+    } catch {
+      return undefined; // a broken resolver must never take a dispatch down
+    }
   }
 
   /** Close the owned lane pool (aborts in-flight tasks, no leaks). */
@@ -590,13 +684,14 @@ export class DispatchEngine {
   }
 
   /**
-   * Continue a TERMINAL run with its original session file and byte-offset.
+   * Continue a TERMINAL run with its original session file.
    *
    * Finds the run (monitor or background registry), verifies it is terminal
-   * (complete/failed/aborted), reuses the SAME sessionPath, and resumes from
-   * `persistedSessionBaseOffset = getSessionFileSize(sessionPath)` so already-
-   * known session content is not re-fed. The new run links `continuedFromRunId`
-   * and increments `turnCount`. Non-terminal runs are refused with a clear error.
+   * (complete/failed/aborted), reuses the SAME sessionPath — pi resumes the
+   * session file AS-IS (no --session-offset: the option does not exist in
+   * pi >= 0.84 and would exit 1; the byte-offset stays ledger metadata only).
+   * The new run links `continuedFromRunId` and increments `turnCount`.
+   * Non-terminal runs are refused with a clear error.
    */
   async continueRun(runId: string, task: string, opts: ContinueRunOptions = {}): Promise<ChildResult> {
     const original = this.monitor.runs.find((candidate) => candidate.id === runId);
@@ -659,7 +754,7 @@ export class DispatchEngine {
       sessionOffset: persistedSessionBaseOffset,
     });
 
-    const result = await this.dispatchOnLane(original.agent, task, preflight, { ...opts, sessionPath, sessionOffset: persistedSessionBaseOffset }, newRunId);
+    const result = await this.dispatchOnLane(original.agent, task, preflight, { ...opts, sessionPath }, newRunId);
     this.settleRun(newRunId, result);
     return result;
   }
@@ -675,6 +770,7 @@ export class DispatchEngine {
         index,
         parentToolCallId: opts.parentToolCallId,
         source: opts.source,
+        onChildEvent: opts.onChildEvent,
       }),
     );
     return { mode: "parallel", results, agents };
@@ -700,6 +796,7 @@ export class DispatchEngine {
         lane,
         parentToolCallId: opts.parentToolCallId,
         source: opts.source,
+        onChildEvent: opts.onChildEvent,
       });
       results.push(result);
       agents.push(step.agent);
@@ -718,10 +815,13 @@ export class DispatchEngine {
     errors.push(...cwdRes.errors);
     errors.push(...validateAllowedPathPolicy(opts.allowedPaths, "allowed_paths", repoRoot));
     errors.push(...validateForbiddenPathPolicy(opts.forbiddenPaths, "forbidden_paths", repoRoot));
-    // C6: worktree isolation needs a resolvable HEAD BEFORE any spawn.
-    errors.push(...validateWorktreeIsolation(opts.isolation, repoRoot));
+    // C6: worktree isolation needs a resolvable HEAD BEFORE any spawn. The
+    // gate returns a CLASSIFIED clean error line (non_git_repo / no_commits /
+    // git_error) — the raw git stderr rides `worktreeError.detail` into the
+    // tool `details` payload, never the parent-facing message.
+    const worktreeGate = validateWorktreeIsolationDetailed(opts.isolation, repoRoot);
+    errors.push(...worktreeGate.errors);
     const requiredTools = opts.tools ?? [];
-    errors.push(...validateDelegationWriteScope("delegate_task", requiredTools, opts.allowedPaths));
 
     const scope = opts.scope ?? this.options.scope ?? "project";
     const agents = discoverAgents(repoRoot, scope, this.options.resolveAgentDirs);
@@ -731,18 +831,42 @@ export class DispatchEngine {
     } else {
       errors.push(...validateToolList(agent, opts.tools));
     }
+    // F1: the write-scope gate must see the child's EFFECTIVE tools — the union
+    // of the dispatch override and the agent card's declared allowlist. A
+    // write-capable card dispatched without allowed_paths is rejected in
+    // preflight, BEFORE any spawn; a read-only override can NEVER downgrade a
+    // write-capable card.
+    const effectiveTools = [...new Set([...requiredTools, ...(agent?.tools ?? [])])];
+    errors.push(...validateDelegationWriteScope("delegate_task", effectiveTools, opts.allowedPaths));
 
     const outputContract = opts.outputContract ?? (agent ? inferOutputContract(agent.name) : undefined);
     if (outputContract) errors.push(...validateOutputContractId(outputContract));
 
     if (errors.length > 0) {
-      return { ok: false, failureKind: classifyConfigOrPreflight(errors), errors, agentName, cwd: cwdRes.cwd };
+      return {
+        ok: false,
+        failureKind: classifyConfigOrPreflight(errors),
+        errors,
+        agentName,
+        cwd: cwdRes.cwd,
+        ...(worktreeGate.kind && worktreeGate.detail !== undefined
+          ? { worktreeError: { kind: worktreeGate.kind, detail: worktreeGate.detail } }
+          : {}),
+      };
     }
 
     // Explicit-model gate: never silently falls back. Blocks when not verified.
-    const modelGate = validateExplicitModelOverride(opts.model, this.options.verifiedCatalog);
+    // The remediation line is appended to the gate errors so the blocking
+    // result tells the caller WHERE the verified catalog is expected.
+    const modelGate = validateExplicitModelOverride(opts.model, this.readVerifiedCatalog());
     if (!modelGate.ok) {
-      return { ok: false, failureKind: "config", errors: modelGate.errors, agentName, cwd: cwdRes.cwd };
+      return {
+        ok: false,
+        failureKind: "config",
+        errors: [...modelGate.errors, modelGate.remediation],
+        agentName,
+        cwd: cwdRes.cwd,
+      };
     }
 
     const modelRoute = resolveChildModel({
@@ -812,6 +936,41 @@ export class DispatchEngine {
     }
   }
 
+  /**
+   * Live usage patch on the run view from a child `kind=turn` event
+   * (cumulative turns + current context snapshot + model). Best effort — a
+   * live-usage failure must never break a dispatch (I10).
+   */
+  private recordLiveUsage(runId: string, event: ChildProgressEvent): void {
+    try {
+      updateDelegationRun(this.monitor, runId, {
+        liveUsage: {
+          turns: event.turns,
+          ...(typeof event.contextTokens === "number" ? { contextTokens: event.contextTokens } : {}),
+          ...(event.model ? { model: event.model } : {}),
+          atMs: this.now(),
+        },
+      });
+    } catch {
+      // best effort (I10): live usage is a display nicety, never critical
+    }
+  }
+
+  /**
+   * F2: resolve the verified catalog for one preflight. The per-dispatch
+   * reader wins over the static value; a throwing reader is captured as a
+   * readError (blocking, honest) instead of crashing the dispatch.
+   */
+  private readVerifiedCatalog(): VerifiedModelCatalog | undefined {
+    const reader = this.options.verifiedCatalogReader;
+    if (!reader) return this.options.verifiedCatalog;
+    try {
+      return reader();
+    } catch (error) {
+      return { present: true, readError: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   private failPreflight(
     runId: string,
     parentToolCallId: string,
@@ -836,6 +995,9 @@ export class DispatchEngine {
       ...delegationLedgerMeta(source, parentToolCallId, mode, opts.index),
       runId,
       agent,
+      // P4: explicit status so `subagents runs` (and any ledger consumer)
+      // sees preflight_failed without deriving it from the event name.
+      status: "preflight_failed",
       failureKind: preflight.failureKind,
       gatePassed: false,
       gateErrors: [...preflight.errors],
@@ -854,6 +1016,7 @@ export class DispatchEngine {
       gateErrors: [...preflight.errors],
       gatePassed: false,
       failureKind: preflight.failureKind,
+      ...(preflight.worktreeError ? { worktreeError: preflight.worktreeError } : {}),
       usage: usageEmpty(),
     };
   }
@@ -861,7 +1024,14 @@ export class DispatchEngine {
   // --- dispatch + settle ---
 
   private async dispatchOnLane(agent: string, task: string, preflight: Extract<PreflightOutcome, { ok: true }>, opts: SingleDispatchOptions, runId: string): Promise<ChildResult> {
-    const lane = opts.lane ?? preflight.agent.name;
+    // F8: fresh-by-default sessions. A run without an explicit lane gets a
+    // UNIQUE lane `<agent>-<runId>` => session file `<agent>-<runId>.jsonl`,
+    // so successive single/parallel runs never share a session. Chain keeps
+    // continuity through its shared explicit lane; continue_run reuses the
+    // original run's explicit sessionPath (the pool's override wins over the
+    // lane). `fresh: false` restores the legacy stable agent-named lane.
+    const fresh = opts.fresh ?? true;
+    const lane = opts.lane ?? (fresh ? `${preflight.agent.name}-${runId}` : preflight.agent.name);
     // C2: wrap ONLY at the child boundary. Monitor views, ledger task hashes
     // and preflight validation all keep the ORIGINAL task; the projection is
     // injected into the child's stdin task and stripped back off the result.
@@ -870,23 +1040,49 @@ export class DispatchEngine {
       const data = this.options.contextProvider.getMainContext();
       effectiveTask = wrapTaskWithContext(task, projectMainContext(data, task), data.sessionFilePath);
     }
+    // P2: children spawn `--no-extensions`; re-add the provider extension
+    // (`-e`) when the resolved model's provider has a known one, so
+    // custom-provider children (e.g. ollama-cloud/...) resolve their model
+    // instead of crashing with 'Model not found'. Builtin/no-provider models
+    // and unknown providers never get an extension.
+    const providerExtension = this.resolveProviderExtension(preflight.model);
+    // Output-contract marker instruction appended LAST so real children emit
+    // the literal final markers the output gates enforce (real-run test 3).
+    const outputContractLine = buildOutputContractPromptLine(preflight.outputContract);
     const input: LaneDispatchInput = {
       task: effectiveTask,
       model: preflight.model,
       thinking: opts.thinking,
       tools: preflight.tools?.join(","),
-      agentPrompt: preflight.memoryBlock
+      extensions: providerExtension ? { providerExtension } : undefined,
+      agentPrompt: [
         // C5: memory block APPENDED to the agent system prompt (after the card
         // prompt). The task (stdin) is never touched by memory.
-        ? `${preflight.agent.prompt}\n\n${preflight.memoryBlock}`
-        : preflight.agent.prompt,
+        preflight.agent.prompt,
+        preflight.memoryBlock,
+        outputContractLine,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       sessionPath: opts.sessionPath,
-      sessionOffset: opts.sessionOffset,
       // B3 graceful turn limits: per-run override wins over engine default.
       maxTurns: opts.maxTurns ?? this.options.maxTurns,
       graceTurns: opts.graceTurns ?? this.options.graceTurns,
       runId,
       steerDir: this.steerDir,
+      // Streaming child progress feed: ALWAYS wired (the engine records a
+      // live usage snapshot per assistant turn even without a caller feed);
+      // the caller callback (per-run over engine-level) receives every event.
+      // runId + agent are FILLED HERE by the engine — the pool's lane id may
+      // be a synthetic fresh-session lane (`<agent>-<runId>`), not the agent
+      // name, so the public event always carries the true run/agent ids.
+      onChildEvent: (event) => {
+        const feed = opts.onChildEvent ?? this.options.onChildEvent;
+        if (feed) feed({ ...event, runId, agent: preflight.agent.name });
+        // Live usage: patch the run view at every assistant turn so widgets
+        // show tokens DURING the run (settle stays authoritative via `usage`).
+        if (event.kind === "turn") this.recordLiveUsage(runId, event);
+      },
     };
     let result: ChildResult;
     let childCwd = preflight.cwd;
@@ -932,6 +1128,13 @@ export class DispatchEngine {
     result.ledgerRunId = runId;
     result.outputContract = preflight.outputContract;
     applyChildGates(result);
+    // F4: surface a provider quota/rate-limit as a first-class failure kind
+    // with its actionable message, instead of leaving the caller with a
+    // generic empty-output gate failure and no hint about the real cause.
+    if (detectProviderQuotaFailure(result)) {
+      result.failureKind = "provider_quota";
+      result.errorMessage ??= PROVIDER_QUOTA_MESSAGE;
+    }
     return result;
   }
 

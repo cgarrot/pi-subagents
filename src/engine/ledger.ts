@@ -23,10 +23,13 @@ import type { DelegationRunMode, DelegationRunSource } from "./runs.js";
 export const DELEGATION_LEDGER_RAW_KEYS = new Set(["body", "prompt", "task", "output", "stderr", "error", "errorMessage", "errors", "gateErrors"]);
 
 /**
- * Recursively strip raw-body keys from an entry, replacing each with
- * `<key>Hashes: string[]` (sha-256 of each string body) and `<key>Count`.
- * Always appends `bodyStored:false`, `promptBodiesStored:false`,
- * `outputBodiesStored:false`. Never mutates the input.
+ * Recursively strip raw-body keys from an entry, replacing each STRING (or
+ * string-array) body with `<key>Hashes` (sha-256 of each string body) +
+ * `<key>Count`. Non-string scalars under a body-like key (numbers/booleans,
+ * e.g. the `usage.output` token counter) are NOT bodies — they persist
+ * as-is so ledger `end` usage totals stay honest (P3). Always appends
+ * `bodyStored:false`, `promptBodiesStored:false`, `outputBodiesStored:false`.
+ * Never mutates the input.
  */
 export function bodyFreeDelegationLedgerEntry(entry: Record<string, unknown>): Record<string, unknown> {
   const sanitize = (value: unknown): unknown => {
@@ -43,7 +46,11 @@ export function bodyFreeDelegationLedgerEntry(entry: Record<string, unknown>): R
         if (bodies.length > 0) {
           output[`${key}Hashes`] = bodies.map((body) => sha256(body));
           output[`${key}Count`] = bodies.length;
+          continue;
         }
+        // P3: numeric/boolean scalars under a body-like key are counters
+        // (usage.output tokens), not bodies — keep them verbatim.
+        if (typeof nested === "number" || typeof nested === "boolean") output[key] = nested;
         continue;
       }
       output[key] = sanitize(nested);
@@ -90,7 +97,13 @@ export function delegationLedgerMeta(
   return { source, parentToolCallId, delegationMode, index };
 }
 
-/** True when a ledger entry contains any raw-body-like key (post-sanitize). */
+/**
+ * True when a ledger entry still contains a raw-body VALUE (string or array)
+ * under a body-like key. Numeric/boolean scalars (counters such as
+ * usage.output) are not bodies and do not flip this (P3).
+ */
 export function hasRawBodyKey(value: Record<string, unknown>): boolean {
-  return Object.keys(value).some((key) => DELEGATION_LEDGER_RAW_KEYS.has(key));
+  return Object.entries(value).some(
+    ([key, nested]) => DELEGATION_LEDGER_RAW_KEYS.has(key) && (typeof nested === "string" || Array.isArray(nested)),
+  );
 }

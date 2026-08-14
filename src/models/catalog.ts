@@ -28,7 +28,7 @@ export type ExplicitModelStatus = typeof EXPLICIT_MODEL_UNAVAILABLE;
 
 /** Honest remediation guidance attached to every blocking gate result. */
 export const EXPLICIT_MODEL_REMEDIATION =
-  "omit the model to use the parent/session default, or choose a model in the verified model catalog with resolutionStatus=verified after confirming current provider availability for this session";
+  "omit the model to inherit the parent/session model, or add the model to the verified model catalog at <repoRoot>/.pi/model-catalog.json (schema zob.model-catalog.v1, entry { \"resolutionStatus\": \"verified\" } after confirming current provider availability for this session)";
 
 /**
  * Injectable verified model catalog. `present` is false when no catalog file

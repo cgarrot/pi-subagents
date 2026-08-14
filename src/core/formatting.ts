@@ -82,10 +82,21 @@ export function capOutput(output: string, limit = 50 * 1024): string {
   return `${truncated}\n\n[truncated: full output stored in tool details]`;
 }
 
+/**
+ * F4: actionable message surfaced wherever a `provider_quota` failure kind
+ * appears (result text, run views). Provider-side usage/rate limits are
+ * retryable by waiting or switching model — say so explicitly.
+ */
+export const PROVIDER_QUOTA_MESSAGE = "Provider quota/rate limit reached — retry later or switch model.";
+
 /** Render a child result into a readable human/machine summary. */
 export function formatChildResultText(result: ChildResult): string {
   const messages: string[] = [];
-  if (result.failureKind) messages.push(`Failure kind: ${result.failureKind}`);
+  if (result.failureKind) {
+    messages.push(`Failure kind: ${result.failureKind}`);
+    // F4: pair the quota kind with its actionable remediation message.
+    if (result.failureKind === "provider_quota") messages.push(PROVIDER_QUOTA_MESSAGE);
+  }
   if (result.contractErrors && result.contractErrors.length > 0) messages.push(`Blocked before child launch (preflight/config):\n- ${result.contractErrors.join("\n- ")}`);
   if (result.gateErrors && result.gateErrors.length > 0) messages.push(`Output-contract gate errors (format repair may be enough; inspect and rerun only if content is actually missing):\n- ${result.gateErrors.join("\n- ")}`);
   if (result.errorMessage) messages.push(`Error: ${result.errorMessage}`);

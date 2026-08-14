@@ -109,6 +109,20 @@ export function resolveChildModel(input: ResolveChildModelInput): ModelRouteResu
 }
 
 /**
+ * F3 quota-safe default class models: map EVERY class (cheap/balanced/
+ * capable) to the parent/session model. Availability rationale: the parent
+ * model is the one model guaranteed available for this session (the parent
+ * runs on it), so a class-routed child never silently switches provider or
+ * burns a different provider's quota (the F3 bug: ollama-cloud parent spawning
+ * openai-codex children). Hosts that want per-class routing pass an explicit
+ * `classModels` map, which REPLACES this default entirely.
+ */
+export function parentInheritingClassModels(parentModel: string | undefined): ModelByClassMap | undefined {
+  const model = nonEmpty(parentModel);
+  return model ? { cheap: model, balanced: model, capable: model } : undefined;
+}
+
+/**
  * Build the honest fallback chain for a class: [preferred (A), ...classChain
  * (B), parent]. Duplicates are removed preserving order; empty/undefined
  * entries are skipped. The parent is always the final sentinel and is never

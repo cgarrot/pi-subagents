@@ -92,6 +92,15 @@ export interface DelegationRunView {
   /** Session-local authority marker. Restored ledger projections omit it. */
   authoritativeCurrentRuntime?: true;
   /**
+   * LIVE mid-run usage snapshot streamed from child `kind=turn` events
+   * (cumulative turns, current contextTokens, model). Written by the engine
+   * while the run is ACTIVE so widgets can show tokens before settle; the
+   * settle path stays authoritative (`usage` overwrites the display at the
+   * terminal transition). In-memory monitor view only — never persisted to
+   * the ledger or attestations (explicit-field posture keeps it out).
+   */
+  liveUsage?: { turns: number; contextTokens?: number; model?: string; atMs: number };
+  /**
    * C3 model-scope warnings (non-blocking preflight notices, e.g. an
    * agent/class/inherited model outside the enabledModels allowlist).
    * Recorded on the run view only; never flips a status or gate.
@@ -230,6 +239,7 @@ export function updateDelegationRun(state: DelegationMonitorState, id: string, p
   if (patch.escalationHash !== undefined) run.escalationHash = patch.escalationHash;
   if (patch.warnings !== undefined) run.warnings = patch.warnings;
   if (patch.attestationRef !== undefined) run.attestationRef = patch.attestationRef;
+  if (patch.liveUsage !== undefined) run.liveUsage = patch.liveUsage;
   return run;
 }
 
@@ -262,12 +272,36 @@ export function outputHashOf(output: string | undefined): string | undefined {
   return output ? sha256(output) : undefined;
 }
 
+/** F4: case-insensitive provider quota/rate-limit signal patterns. */
+const PROVIDER_QUOTA_PATTERN = /usage limit|rate limit|quota/i;
+
+/**
+ * F4: detect a provider quota/rate-limit failure on an ALREADY-FAILED child
+ * (non-zero exit, failed output gate, or runtime error). A successful child
+ * whose output merely mentions quotas is never classified — the failure gate
+ * keeps honest runs honest. Matches stderr, output, and errorMessage
+ * case-insensitively against `usage limit` / `rate limit` / `quota`.
+ */
+export function detectProviderQuotaFailure(result: ChildResult): boolean {
+  const failed = result.exitCode !== 0 || result.gatePassed === false || result.stopReason === "error";
+  if (!failed) return false;
+  return (
+    PROVIDER_QUOTA_PATTERN.test(result.stderr ?? "") ||
+    PROVIDER_QUOTA_PATTERN.test(result.output ?? "") ||
+    PROVIDER_QUOTA_PATTERN.test(result.errorMessage ?? "")
+  );
+}
+
 /** Compute an honest child failure kind from a settled child result. */
 export function classifyChildFailure(result: ChildResult): DelegationFailureKind | undefined {
   // B5: an escalation is not a failure — the child deliberately handed
   // control back to the master (which may continue the run).
   if (result.stopReason === "escalated") return undefined;
   if (result.stopReason === "aborted") return "aborted";
+  // F4: provider quota/rate-limit — the actionable kind instead of a generic
+  // child_runtime/output_gate when the failed child's text names the limit
+  // (e.g. "Codex error: The usage limit has been reached").
+  if (detectProviderQuotaFailure(result)) return "provider_quota";
   if (result.exitCode !== 0 || result.stopReason === "error") return "child_runtime";
   if (result.gatePassed === false) return "output_gate";
   return undefined;

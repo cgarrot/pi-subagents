@@ -39,6 +39,16 @@ describe("validateSixPartContract", () => {
     assert.ok(errors.some((e) => e.includes("Missing contract section: CONTEXT")), JSON.stringify(errors));
   });
 
+  it("missing-section errors explain the literal `LABEL:` colon requirement", () => {
+    const errors = validateSixPartContract("no contract sections at all");
+    assert.ok(errors.length >= 6, JSON.stringify(errors));
+    for (const error of errors) {
+      assert.ok(error.includes("with a colon"), `message must mention the colon: ${error}`);
+      assert.ok(error.includes("literal `LABEL:` markers"), `message must mention literal LABEL: markers: ${error}`);
+    }
+    assert.ok(errors.some((e) => e.includes("`TASK:`")), "message must show the concrete TASK: marker");
+  });
+
   it("flags empty/placeholder sections", () => {
     const emptyBody = `1. TASK: [atomic goal]
 2. EXPECTED OUTCOME: [placeholder]

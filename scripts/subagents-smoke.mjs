@@ -238,7 +238,11 @@ async function main() {
         maxParallel: 2,
         source: "delegate_task",
       });
-      const result = await engine.single("implementer", contractTask("build a widget"), { outputContract: "base.v1" });
+      // F1: the write-scope gate sees the agent card's effective tools — the
+      // default implementer card is write-capable (edit/write), so a legit
+      // write dispatch must carry non-empty allowed_paths (mirror of
+      // test/engine/write-scope-card.test.ts "WITH allowed_paths passes").
+      const result = await engine.single("implementer", contractTask("build a widget"), { outputContract: "base.v1", allowedPaths: ["src/"] });
       assert.equal(result.exitCode, 0, `child exitCode was ${result.exitCode}`);
       assert.equal(result.gatePassed, true, `output gate failed: ${(result.gateErrors ?? []).join("; ")}`);
       assert.equal(result.agent, "implementer");
@@ -308,7 +312,9 @@ async function main() {
       });
       const details = await engine.chain([
         { agent: "planner", task: contractTask("step one: plan"), outputContract: "base.v1" },
-        { agent: "implementer", task: contractTask("step two uses: {previous}"), outputContract: "base.v1" },
+        // F1: implementer's card is write-capable (edit/write) — the step must
+        // carry allowed_paths or preflight blocks it (union of card tools).
+        { agent: "implementer", task: contractTask("step two uses: {previous}"), outputContract: "base.v1", allowedPaths: ["src/"] },
       ]);
       assert.equal(details.mode, "chain");
       assert.equal(details.results.length, 2);
@@ -486,17 +492,16 @@ async function main() {
       assert.equal(contRun.turnCount, 2, "turnCount must increment from the original");
       assert.equal(contRun.sessionPath, sessionPath, "continue must reuse the SAME sessionPath");
 
-      // The continuation spawn reuses --session <same path> and resumes at
-      // --session-offset <session file size> (already-known content not re-fed).
+      // The continuation spawn reuses --session <same path>; pi resumes the
+      // session file AS-IS — no --session-offset (the option does not exist in
+      // pi >= 0.84 and would exit 1).
       const contArgs = recorded.args[1];
       const sessionIdx = contArgs.indexOf("--session");
       assert.ok(sessionIdx >= 0, "continue args must include --session");
       assert.equal(contArgs[sessionIdx + 1], sessionPath);
-      const offsetIdx = contArgs.indexOf("--session-offset");
-      assert.ok(offsetIdx >= 0, "continue args must include --session-offset");
-      assert.equal(Number(contArgs[offsetIdx + 1]), Buffer.byteLength(known), "offset must equal the session file size");
+      assert.ok(!contArgs.includes("--session-offset"), "continue args must NOT include --session-offset");
       engine.close();
-      return `session reused, offset=${Buffer.byteLength(known)}, turnCount=2`;
+      return `session reused as-is (no offset flag), turnCount=2`;
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -604,9 +609,12 @@ async function main() {
       });
       // 4-turn child under maxTurns=2 + graceTurns=3 (4 < 2+3): the soft
       // wrap-up steer fires at turn 2 and the run finishes cleanly -> 'steered',
-      // never aborted.
+      // never aborted. F1: implementer is write-capable, so allowed_paths is
+      // required for the run to ever start (graceful B3 asserts only make
+      // sense on a spawned run, not a preflight block).
       const result = await engine.single("implementer", contractTask("bounded work"), {
         outputContract: "base.v1",
+        allowedPaths: ["src/"],
         maxTurns: 2,
         graceTurns: 3,
         runId: "smoke-grace-run",
@@ -640,9 +648,11 @@ async function main() {
         source: "delegate_task",
       });
       // 6-turn runaway under maxTurns=1 + graceTurns=2: bounded abort exactly at
-      // turn 3 (1+2), after the soft steer was delivered at turn 1.
+      // turn 3 (1+2), after the soft steer was delivered at turn 1. F1: same
+      // write-scope requirement as the steered check above (write-capable card).
       const result = await engine.single("implementer", contractTask("runaway work"), {
         outputContract: "base.v1",
+        allowedPaths: ["src/"],
         maxTurns: 1,
         graceTurns: 2,
         runId: "smoke-over-run",

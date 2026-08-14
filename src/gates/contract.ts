@@ -51,7 +51,11 @@ export function validateSixPartContract(task: string): string[] {
   });
 
   for (const match of matches) {
-    if (match.index === -1) errors.push(`Missing contract section: ${match.label}`);
+    if (match.index === -1) {
+      errors.push(
+        `Missing contract section: ${match.label} — use \`${match.label}:\` with a colon (sections must use literal \`LABEL:\` markers)`,
+      );
+    }
   }
   if (errors.length > 0) return errors;
 

@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { LanePool } from "../../src/lanes/pool.js";
 import type { SpawnFn } from "../../src/lanes/spawn.js";
+import type { ChildProgressEvent } from "../../src/core/types.js";
 
 // Headless: every test injects a SpawnFn that runs the fake-pi fixture. No real
 // `pi` binary is ever launched.
@@ -222,6 +223,83 @@ describe("lanes/pool: usage accumulation via fake pi multi-turn (B4 anti-double-
       assert.equal(result.usage.output, 100);
       assert.equal(result.usage.contextTokens, 1_100);
       assert.ok(Math.abs(result.usage.cost - 0.001) < 1e-9);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Child progress feed — the pool must surface onChildEvent per captured child
+// toolCall (kind=action, `name(args)` summary) and per assistant message_end
+// (kind=turn with turns/model/contextTokens, plus an optional kind=text
+// preview), with runId + agent filled from the dispatch input.
+describe("lanes/pool: onChildEvent streaming progress feed", () => {
+  const TOOLCALL_SCRIPT = [
+    "const emit = (o) => process.stdout.write(JSON.stringify(o) + \"\\n\");",
+    'let data = "";',
+    'process.stdin.setEncoding("utf8");',
+    'process.stdin.on("data", (c) => { data += c; });',
+    'process.stdin.on("end", () => {',
+    "  emit({type:\"message_end\", message:{role:\"assistant\", content:[",
+    "    {type:\"toolCall\", toolCall:{id:\"t1\", name:\"bash\", arguments:{command:\"echo hi\"}}},",
+    "    {type:\"text\", text:\"done working\"}],",
+    "    model:\"gpt-5.5\", provider:\"openai-codex\",",
+    "    usage:{input:10, output:5, cacheRead:0, cacheWrite:0, totalTokens:15, cost:{total:0.001}}}});",
+    '  emit({type:"agent_settled"});',
+    "  process.exit(0);",
+    "});",
+  ].join("\n");
+  const spawnToolCallChild: SpawnFn = ({ cwd, env }) =>
+    spawn(process.execPath, ["-e", TOOLCALL_SCRIPT], { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"], env });
+
+  it("emits action then turn (+text preview) events with runId/agent/turns/model/contextTokens filled", async () => {
+    const dir = tempDir("events");
+    try {
+      const events: ChildProgressEvent[] = [];
+      const pool = new LanePool({ spawn: spawnToolCallChild, sessionDir: dir, cwd: dir });
+      const result = await pool.dispatch("feed-lane", {
+        task: "use tools",
+        runId: "run-feed-1",
+        onChildEvent: (event) => events.push(event),
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.deepEqual(result.actions, ['bash({"command":"echo hi"})']);
+
+      const action = events.find((event) => event.kind === "action");
+      assert.ok(action, "an action event must be emitted");
+      assert.equal(action.runId, "run-feed-1");
+      assert.equal(action.agent, "feed-lane");
+      assert.equal(action.detail, 'bash({"command":"echo hi"})');
+      assert.equal(action.turns, 1);
+      assert.equal(action.model, "openai-codex/gpt-5.5");
+      assert.equal(action.contextTokens, 15);
+
+      const turn = events.find((event) => event.kind === "turn");
+      assert.ok(turn, "a turn event must be emitted");
+      assert.equal(turn.detail, "assistant turn 1");
+      assert.equal(turn.turns, 1);
+      assert.equal(turn.model, "openai-codex/gpt-5.5");
+      assert.equal(turn.contextTokens, 15);
+
+      const text = events.find((event) => event.kind === "text");
+      assert.ok(text, "a text event must be emitted");
+      assert.equal(text.detail, "done working");
+
+      // Order: the action precedes the completed-turn event.
+      assert.ok(events.indexOf(action!) < events.indexOf(turn!));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits nothing when no onChildEvent is configured (feed stays opt-in)", async () => {
+    const dir = tempDir("quiet");
+    try {
+      const pool = new LanePool({ spawn: spawnToolCallChild, sessionDir: dir, cwd: dir });
+      const result = await pool.dispatch("quiet-lane", { task: "still works" });
+      assert.equal(result.exitCode, 0);
+      assert.deepEqual(result.actions, ['bash({"command":"echo hi"})']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

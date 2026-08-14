@@ -15,8 +15,8 @@
  * The bottom auto-run is guarded so tests can import `main` and the command
  * handlers directly without launching real `pi`.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { buildAgentCatalog, formatAgentList, discoverAgents, type AgentCard } from "../registry/index.js";
@@ -46,7 +46,9 @@ function piCommand(env: NodeJS.ProcessEnv): string {
 }
 
 function resolveLedgerDir(cwd: string, cfg: SubagentsConfig): string {
-  return join(cwd, cfg.ledgerDir);
+  // P4: an absolute ledger dir (e.g. SUBAGENTS_LEDGER=/tmp/x in tests) wins
+  // over the cwd join; relative defaults stay cwd-relative.
+  return isAbsolute(cfg.ledgerDir) ? cfg.ledgerDir : join(cwd, cfg.ledgerDir);
 }
 
 function usage(stream: NodeJS.WriteStream): void {
@@ -127,12 +129,21 @@ interface LedgerRun {
   status?: string;
   agent?: string;
   startedAt?: string;
+  endedAt?: string;
   latencyMs?: number;
 }
 
+/**
+ * Aggregate the ledger into ONE entry per runId (P4): `startedAt` is the MIN
+ * event timestamp (a start event's timestamp, not a late end fallback),
+ * `endedAt` the MAX, `status` the LAST status-bearing event (derived from the
+ * event name for legacy lines that carry none, e.g. preflight_failed), and
+ * `latencyMs` the last recorded one (or the started->ended delta).
+ */
 function readLedgerRuns(dir: string): LedgerRun[] {
   if (!existsSync(dir)) return [];
-  const runs: LedgerRun[] = [];
+  const rows: Array<{ ts: number; order: number; entry: Record<string, unknown> }> = [];
+  let order = 0;
   for (const name of readdirSync(dir)) {
     if (!name.endsWith(".jsonl")) continue;
     const file = join(dir, name);
@@ -148,19 +159,45 @@ function readLedgerRuns(dir: string): LedgerRun[] {
       try {
         const entry = JSON.parse(trimmed) as Record<string, unknown>;
         if (typeof entry.runId !== "string") continue;
-        runs.push({
-          runId: entry.runId,
-          status: typeof entry.status === "string" ? entry.status : undefined,
-          agent: typeof entry.agent === "string" ? entry.agent : undefined,
-          startedAt: typeof entry.startedAt === "string" ? entry.startedAt : typeof entry.timestamp === "string" ? entry.timestamp : undefined,
-          latencyMs: typeof entry.latencyMs === "number" ? entry.latencyMs : undefined,
-        });
+        const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "";
+        const ts = timestamp ? Date.parse(timestamp) || 0 : 0;
+        rows.push({ ts, order: order++, entry });
       } catch {
         // skip unparseable line
       }
     }
   }
-  return runs;
+  // Chronological (timestamp first; file/line order breaks ties) so "last"
+  // status/latency and min/max timestamps are stable across day files.
+  rows.sort((a, b) => a.ts - b.ts || a.order - b.order);
+  const runs = new Map<string, LedgerRun>();
+  for (const { entry } of rows) {
+    const runId = entry.runId as string;
+    let run = runs.get(runId);
+    if (!run) {
+      run = { runId };
+      runs.set(runId, run);
+    }
+    // ISO-8601 Z timestamps sort lexicographically == chronologically.
+    if (typeof entry.timestamp === "string") {
+      if (!run.startedAt || entry.timestamp < run.startedAt) run.startedAt = entry.timestamp;
+      if (!run.endedAt || entry.timestamp >= run.endedAt) run.endedAt = entry.timestamp;
+    }
+    if (typeof entry.startedAt === "string" && (!run.startedAt || entry.startedAt < run.startedAt)) run.startedAt = entry.startedAt;
+    if (typeof entry.agent === "string") run.agent = entry.agent;
+    if (typeof entry.status === "string") run.status = entry.status;
+    else if (!run.status && entry.event === "preflight_failed") run.status = "preflight_failed";
+    else if (!run.status && (entry.event === "start" || entry.event === "continue_start")) run.status = "running";
+    if (typeof entry.latencyMs === "number") run.latencyMs = entry.latencyMs;
+  }
+  // Duration fallback: started->ended delta when no end latency was recorded.
+  for (const run of runs.values()) {
+    if (run.latencyMs === undefined && run.startedAt && run.endedAt) {
+      const delta = Date.parse(run.endedAt) - Date.parse(run.startedAt);
+      if (Number.isFinite(delta) && delta >= 0) run.latencyMs = delta;
+    }
+  }
+  return [...runs.values()];
 }
 
 function sortRuns(runs: LedgerRun[], sort: DelegationSortMode): LedgerRun[] {
@@ -194,7 +231,7 @@ function cmdRuns(args: string[], cfg: SubagentsConfig): number {
   process.stdout.write(`runs (${runs.length}, sort=${sort}) in ${dir}\n`);
   for (const run of runs) {
     process.stdout.write(
-      `${run.runId}\t${run.status ?? "?"}\tagent=${run.agent ?? "-"}\tstarted=${run.startedAt ?? "-"}\tduration=${run.latencyMs ?? "-"}ms\n`,
+      `${run.runId}\t${run.status ?? "?"}\tagent=${run.agent ?? "-"}\tstarted=${run.startedAt ?? "-"}\tended=${run.endedAt ?? "-"}\tduration=${run.latencyMs !== undefined ? `${run.latencyMs}ms` : "-"}\n`,
     );
   }
   return 0;
@@ -260,7 +297,7 @@ function bootPiOnce(
     };
     let child: ReturnType<typeof spawn> | undefined;
     try {
-      child = spawn(command, ["--mode", "json", "-p", "--no-extensions"], {
+      child = spawn(command, ["--mode", "json", "-p", "--no-extensions", "--no-session"], {
         cwd: process.cwd(),
         shell: false,
         stdio: ["pipe", "ignore", "pipe"],
@@ -361,9 +398,30 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
   }
 }
 
-// Guarded auto-run: only when executed as the bin/entry (not on import by tests).
-const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
-if (import.meta.url === entryUrl) {
+/**
+ * Guarded auto-run helper (P1): true when this module is the process entry.
+ * argv[1] is resolved through symlinks (realpathSync) BEFORE comparing because
+ * Node resolves the entry module's real path into import.meta.url while
+ * argv[1] keeps the SYMLINKED invocation path (e.g. the bin reached via
+ * zob-harness/packages/pi-subagents). The raw pathToFileURL comparison never
+ * matched in that case, leaving the bin silent (exit 0, no output, even for
+ * --version). The raw comparison is kept as a fallback (--preserve-symlinks
+ * and unresolvable paths). Exported for unit tests.
+ */
+export function isCliEntry(argv1: string | undefined, moduleUrl: string): boolean {
+  if (!argv1) return false;
+  const rawUrl = pathToFileURL(argv1).href;
+  if (rawUrl === moduleUrl) return true;
+  try {
+    return pathToFileURL(realpathSync(argv1)).href === moduleUrl;
+  } catch {
+    return false; // nonexistent/unresolvable path — the raw compare above already said no
+  }
+}
+
+// Guarded auto-run: only when executed as the bin/entry (not on import by
+// tests). Symlink-safe via isCliEntry (P1).
+if (isCliEntry(process.argv[1], import.meta.url)) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))
     .catch((err: unknown) => {

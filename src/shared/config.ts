@@ -99,6 +99,15 @@ export interface SubagentsConfig {
    */
   maxSubagentDepth: number;
   models: SubagentsModelsConfig;
+  /**
+   * P2 provider extensions: provider id -> local extension entry path. When
+   * the resolved child model's provider matches, the child spawn argv gains
+   * `-e <path>` (children otherwise run `--no-extensions` and custom-provider
+   * models crash with 'Model not found'). Entries are existsSync-guarded;
+   * the built-in `ollama-cloud` -> `~/pi-provider-ollama-cloud/src/index.ts`
+   * default applies when the provider is not mapped here.
+   */
+  providerExtensions?: Record<string, string>;
 }
 
 export const DEFAULT_MODEL_CLASSES: ModelClassMap = { cheap: "", balanced: "", capable: "" };
@@ -173,6 +182,19 @@ function envCsv(env: NodeJS.ProcessEnv, key: string): string[] | undefined {
     .filter(Boolean);
 }
 
+/** P2: keep only non-empty string->string entries of a providerExtensions map. */
+function sanitizeProviderExtensions(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, ext] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof ext !== "string") continue;
+    const provider = key.trim();
+    const path = ext.trim();
+    if (provider && path) out[provider] = path;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /**
  * Load the pi-subagents config:
  * `defaults < <cwd>/.subagents/config.json < SUBAGENTS_* env`.
@@ -213,6 +235,7 @@ export function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): S
     defaultMaxTurns: boundedOptionalInt(fileCfg.defaultMaxTurns, HARD_MIN_MAX_TURNS, HARD_MAX_MAX_TURNS),
     defaultGraceTurns: clampInt(fileCfg.defaultGraceTurns, DEFAULT_GRACE_TURNS, HARD_MIN_GRACE_TURNS, HARD_MAX_GRACE_TURNS),
     maxSubagentDepth: clampMaxSubagentDepth(fileCfg.maxSubagentDepth),
+    providerExtensions: sanitizeProviderExtensions(fileCfg.providerExtensions),
     models: {
       classes: {
         cheap: typeof fileClasses?.cheap === "string" ? fileClasses.cheap : DEFAULT_MODEL_CLASSES.cheap,

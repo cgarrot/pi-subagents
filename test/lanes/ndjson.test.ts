@@ -82,6 +82,82 @@ describe("lanes/ndjson: NdjsonStreamParser", () => {
   });
 });
 
+describe("lanes/ndjson: toolCall capture (ephemeral actions feed)", () => {
+  it("captures content[].toolCall parts into actions[] as name(args) with ~80-char truncated args", () => {
+    const result = makeResult("tools");
+    const parser = new NdjsonStreamParser(result);
+    const longPath = "/a/very/long/path/".repeat(20);
+    parser.push(
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "working" },
+            { type: "toolCall", toolCall: { id: "t1", name: "bash", arguments: { command: "npm test" } } },
+            { type: "toolCall", toolCall: { id: "t2", name: "read", arguments: { path: longPath } } },
+          ],
+          model: "gpt-5.5",
+          provider: "openai-codex",
+        },
+      }) + "\n",
+    );
+    const longArgs = JSON.stringify({ path: longPath });
+    assert.deepEqual(result.actions, [
+      `bash(${JSON.stringify({ command: "npm test" })})`,
+      `read(${longArgs.slice(0, 80)}…)`,
+    ]);
+    assert.ok(longArgs.length > 80, "fixture must exercise truncation");
+    // The capture never disturbs the turn/usage accounting.
+    assert.equal(result.usage.turns, 1);
+    assert.equal(result.output, "working");
+  });
+
+  it("fires action update infos before the turn info on message_end", () => {
+    const result = makeResult("order");
+    const kinds: string[] = [];
+    const parser = new NdjsonStreamParser(result, {
+      onUpdate: (_r, info) => kinds.push(info?.action ?? info?.kind ?? "?"),
+    });
+    parser.push(
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", toolCall: { name: "grep", arguments: { pattern: "x" } } }],
+          model: "gpt-5.5",
+        },
+      }) + "\n",
+    );
+    assert.deepEqual(kinds, [`grep(${JSON.stringify({ pattern: "x" })})`, "turn"]);
+  });
+
+  it("accepts a flat toolCall part shape and non-object args", () => {
+    const result = makeResult("flat");
+    const parser = new NdjsonStreamParser(result);
+    parser.push(
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", name: "bash", arguments: "echo hi" },
+            { type: "toolCall", toolCall: { name: "read" } },
+          ],
+        },
+      }) + "\n",
+    );
+    assert.deepEqual(result.actions, ["bash(echo hi)", "read()"]);
+  });
+
+  it("keeps actions undefined when the child emits no toolCalls", () => {
+    const result = makeResult("none");
+    const parser = new NdjsonStreamParser(result);
+    parser.push(spikeLines("none").join("\n") + "\n");
+    assert.equal(result.actions, undefined);
+  });
+});
+
 describe("lanes/ndjson: usage accumulation (B4 anti-double-counting)", () => {
   // One assistant message_end carrying a cumulative usage snapshot (pi
   // re-encodes the whole conversation each turn -> growing counters).

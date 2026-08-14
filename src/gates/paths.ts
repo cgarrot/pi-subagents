@@ -35,7 +35,9 @@ function hasTraversalSegment(path: string): boolean {
 }
 
 function allowedPathGuidance(label: string, path: string, reason: string): string {
-  return `${label} path must be repo-relative only (${reason}) and stay inside repo root: ${path}. If the child needs external context, write or cite a repo-local snapshot/context_ref under reports/... and pass that repo-relative ref instead.`;
+  // F7: backtick-quote the offending path so a broad root like `.` can never
+  // render as the ambiguous traversal-looking "root: ..".
+  return `${label} path must be repo-relative only (${reason}) and stay inside repo root: \`${path}\`. If the child needs external context, write or cite a repo-local snapshot/context_ref under reports/... and pass that repo-relative ref instead.`;
 }
 
 /**

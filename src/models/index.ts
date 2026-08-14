@@ -10,3 +10,4 @@ export * from "./availability-cache.js";
 export * from "./catalog.js";
 export * from "./probe-pi.js";
 export * from "./scope.js";
+export * from "./provider-extensions.js";

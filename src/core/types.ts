@@ -43,7 +43,7 @@ export type JsonEvent = {
   toolName?: string;
 };
 
-export type DelegationFailureKind = "preflight" | "config" | "output_gate" | "child_runtime" | "aborted";
+export type DelegationFailureKind = "preflight" | "config" | "output_gate" | "child_runtime" | "provider_quota" | "aborted";
 
 export type OutputGateIssueCode =
   | "empty_output"
@@ -97,11 +97,27 @@ export interface ChildResult {
   gateErrors?: string[];
   gateIssues?: OutputGateIssue[];
   gatePassed?: boolean;
+  /**
+   * C6 worktree gate DETAIL: the classified failure kind plus the bounded
+   * raw git detail. The parent-facing message/gateErrors carry ONLY the
+   * clean classification; this field lands in tool `details` (the full
+   * result object is embedded there). IN-MEMORY ONLY — never persisted to
+   * the ledger, attestations, or run views.
+   */
+  worktreeError?: { kind: string; detail: string };
   preflightDiagnostics?: DelegationPreflightDiagnostic[];
   failureKind?: DelegationFailureKind;
   stopReason?: string;
   stopCondition?: ChildStopCondition;
   errorMessage?: string;
+  /**
+   * EPHEMERAL child action feed: `name(args)` summaries of every toolCall
+   * the child performed, captured from assistant message_end content parts
+   * (args truncated ~80 chars). IN-MEMORY ONLY — NEVER persisted: the ledger,
+   * attestations and run views stay hash-only/body-free (they pick explicit
+   * scalar/hash fields and structurally ignore this array).
+   */
+  actions?: string[];
   /**
    * B5 escalation: the consumed ask_master message (exit code 42 + a
    * `<runId>.escalation.json` file read-and-deleted by the parent). In-memory
@@ -140,6 +156,24 @@ export interface DelegationDetails {
   mode: "single" | "parallel" | "chain";
   results: ChildResult[];
   agents: string[];
+}
+
+/**
+ * Streaming child progress event, surfaced per dispatched run via the
+ * `onChildEvent` callback (engine + per-run option, plumbed through the
+ * LanePool). `turn` fires at each assistant message_end (with the run's
+ * cumulative turns/model/context snapshot); `action` fires at each captured
+ * child toolCall with a `name(args)` summary; `text` optionally carries a
+ * preview of the completed assistant message. In-memory feed only.
+ */
+export interface ChildProgressEvent {
+  runId: string;
+  agent: string;
+  kind: "turn" | "action" | "text";
+  detail: string;
+  turns: number;
+  model?: string;
+  contextTokens?: number;
 }
 
 export type ChildStopCondition =
