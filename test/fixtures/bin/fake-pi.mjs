@@ -34,6 +34,14 @@
 // ignored; the fixture only cares about the task payload.
 
 const argv = process.argv.slice(2);
+
+// CI-safe exit: stdout to a pipe is ASYNCHRONOUS on Linux — process.exit()
+// can truncate pending writes there (it does not on macOS pipes), which made
+// the nested spawn test lose the final message_end/agent_end lines on the
+// GitHub Actions runner. Drain stdout before exiting.
+function exitWhenDrained(code) {
+  process.stdout.write("", () => process.exit(code));
+}
 const fail = argv.includes("--fail");
 const positional = [];
 let usageTurns = 0;
@@ -116,6 +124,9 @@ emit({
 
 const answer = `answer:${task}`;
 
+// Top-level return is illegal in ESM — wrap the flow in an async main so
+// every early exit path can `return` after draining stdout.
+async function main() {
 if (escalateMessage !== undefined) {
   // B5 escalation mode: one assistant turn announcing the escalation, then
   // the ask_master side effect (atomic escalation-file write) + exit 42.
@@ -143,7 +154,8 @@ if (escalateMessage !== undefined) {
     writeFileSync(tmp, JSON.stringify({ runId, message: escalateMessage, timestamp: Date.now() }), "utf8");
     renameSync(tmp, target);
   }
-  process.exit(42);
+  exitWhenDrained(42);
+  return;
 }
 
 if (turnsMode > 0) {
@@ -172,7 +184,8 @@ if (turnsMode > 0) {
   }
   emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: finalText }] }] });
   emit({ type: "agent_settled" });
-  process.exit(0);
+  exitWhenDrained(0);
+  return;
 }
 
 if (usageTurns > 0) {
@@ -186,7 +199,8 @@ if (usageTurns > 0) {
     }
     emit({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0 } });
     if (fail) {
-      process.exit(3);
+      exitWhenDrained(3);
+      return;
     }
     emit({
       type: "message_end",
@@ -209,7 +223,8 @@ if (usageTurns > 0) {
   }
   emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: answer }] }] });
   emit({ type: "agent_settled" });
-  process.exit(0);
+  exitWhenDrained(0);
+  return;
 }
 
 emit({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
@@ -223,7 +238,8 @@ emit({ type: "message_update", assistantMessageEvent: { type: "text_end", conten
 
 if (fail) {
   // Clean failure path: no agent_end / agent_settled, non-zero exit.
-  process.exit(3);
+  exitWhenDrained(3);
+  return;
 }
 
 emit({
@@ -241,4 +257,8 @@ emit({
   messages: [{ role: "assistant", content: [{ type: "text", text: answer }] }],
 });
 emit({ type: "agent_settled" });
-process.exit(0);
+exitWhenDrained(0);
+return;
+}
+
+await main();
