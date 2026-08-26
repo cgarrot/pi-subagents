@@ -8,8 +8,8 @@ import { registerCommands } from "../../src/extension/commands.js";
 import { registerTools } from "../../src/extension/tools.js";
 import { fakeCtx, stubApi } from "./stub-api.js";
 
-describe("extension/registration: 6 tools via default extension", () => {
-  it("registers all 6 delegation tools with non-empty snippets and schema params", () => {
+describe("extension/registration: 5 tools via default extension", () => {
+  it("registers all 5 delegation tools with non-empty snippets and schema params", () => {
     const { api, tools } = stubApi();
     subagentsExtension(api);
 
@@ -20,7 +20,6 @@ describe("extension/registration: 6 tools via default extension", () => {
       "delegate_agent",
       "delegate_task",
       "get_delegation_run",
-      "zob_delegation_catalog",
     ]);
 
     for (const tool of tools.values()) {
@@ -32,8 +31,8 @@ describe("extension/registration: 6 tools via default extension", () => {
       assert.ok(tool.parameters.properties && typeof tool.parameters.properties === "object");
       assert.equal(typeof tool.execute, "function");
     }
-    // Harness-parity: only the three routing/freeform tools carry guidelines.
-    for (const name of ["zob_delegation_catalog", "delegate_agent", "delegate_task"]) {
+    // Harness-parity: only the two routing/freeform tools carry guidelines.
+    for (const name of ["delegate_agent", "delegate_task"]) {
       const tool = tools.get(name);
       assert.ok(tool && Array.isArray(tool.promptGuidelines) && tool.promptGuidelines.length > 0, `promptGuidelines empty for ${name}`);
     }
@@ -64,13 +63,13 @@ describe("extension/registration: 6 tools via default extension", () => {
 });
 
 describe("extension/registration: direct registerTools + registerCommands", () => {
-  it("registerTools registers 6 tools; registerCommands registers 3 commands", () => {
+  it("registerTools registers 5 tools; registerCommands registers 3 commands", () => {
     const toolsApi = stubApi();
     const commandsApi = stubApi();
     const ensure = () => { throw new Error("no runtime in registration test"); };
     registerTools(toolsApi.api, ensure);
     registerCommands(commandsApi.api, ensure);
-    assert.equal(toolsApi.tools.size, 6);
+    assert.equal(toolsApi.tools.size, 5);
     assert.equal(commandsApi.commands.size, 3);
   });
 });

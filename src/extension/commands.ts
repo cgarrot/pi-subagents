@@ -21,11 +21,11 @@ function registerAgentsCommand(pi: ExtensionAPI, ensureRuntime: EnsureRuntime): 
       ensureRuntime(ctx);
       const [sub] = args.trim().split(/\s+/).filter(Boolean);
       if (sub === "catalog") {
-        const catalog = buildAgentCatalog({ cwd: ctx.cwd, scope: "project" });
+        const catalog = buildAgentCatalog({ cwd: ctx.cwd, scope: "both" });
         notify(ctx, formatDelegationCatalogSummary(catalog));
         return;
       }
-      notify(ctx, formatAgentList(discoverAgents(ctx.cwd, "project")));
+      notify(ctx, formatAgentList(discoverAgents(ctx.cwd, "both")));
     },
   });
 }
@@ -66,7 +66,8 @@ function registerSubagentsCommand(pi: ExtensionAPI, ensureRuntime: EnsureRuntime
       const summary = summarizeDelegations(rt.engine.monitor);
       const bgStates = rt.background.list();
       const bgRunning = bgStates.filter((state) => state.status === "running" || state.status === "queued").length;
-      const agents = discoverAgents(ctx.cwd, "project");
+      const agents = discoverAgents(ctx.cwd, "both");
+      const projectCount = agents.filter((agent) => agent.source === "project").length;
       notify(
         ctx,
         [
@@ -74,7 +75,7 @@ function registerSubagentsCommand(pi: ExtensionAPI, ensureRuntime: EnsureRuntime
           `  repoRoot: ${rt.repoRoot}`,
           `  engine: ready (runs=${summary.total}, active=${summary.running}, complete=${summary.complete}, failed=${summary.failed}, preflight=${summary.preflightFailed})`,
           `  background: ${bgStates.length} total (${bgRunning} active)`,
-          `  agents: ${agents.length} project agents`,
+          `  agents: ${agents.length} available (${projectCount} project, ${agents.length - projectCount} user)`,
           `  uptime: ${Math.floor((Date.now() - rt.startedAt) / 1000)}s`,
         ].join("\n"),
       );

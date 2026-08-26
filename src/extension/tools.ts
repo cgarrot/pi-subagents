@@ -28,7 +28,7 @@ import { verifyAttestationSidecar } from "../engine/attestation.js";
 import { BackgroundRunRegistry, type BackgroundRunState } from "../engine/background.js";
 import { listDelegationRuns } from "../engine/monitor.js";
 import { listOutputContracts, parseToolList } from "../gates/index.js";
-import { buildAgentCatalog, discoverAgents, formatAgentList, type AgentCatalog } from "../registry/index.js";
+import { discoverAgents, formatAgentList, type AgentCatalog } from "../registry/index.js";
 import type { EnabledModelsReader, ModelByClassMap, VerifiedModelCatalog } from "../models/index.js";
 import { parentInheritingClassModels } from "../models/index.js";
 import type { SpawnFn } from "../lanes/index.js";
@@ -41,7 +41,6 @@ import {
   CONTINUE_RUN_PARAMS,
   DELEGATE_PARAMS,
   DELEGATE_TASK_PARAMS,
-  DELEGATION_CATALOG_PARAMS,
   DELEGATION_RUN_PARAMS,
 } from "./schemas.js";
 
@@ -387,30 +386,7 @@ export function formatDelegationCatalogSummary(catalog: AgentCatalog): string {
 
 // --------------------------------------------------------------- tools
 
-/** 1) zob_delegation_catalog — read-only, no dispatch. */
-export function registerDelegationCatalog(pi: ExtensionAPI, ensureRuntime: EnsureRuntime): void {
-  pi.registerTool({
-    name: "zob_delegation_catalog",
-    label: "ZOB Delegation Catalog",
-    description:
-      "Read-only live catalog of available delegation agents, their tools/descriptions, and valid output contract ids. No child dispatch, no execution, no network.",
-    promptSnippet: "Inspect available delegation agents and output contracts before choosing delegate_agent/delegate_task",
-    promptGuidelines: [
-      "Use this before the first delegation when agent or output_contract routing is uncertain.",
-      "Choose the agent by desired deliverable; normally omit delegate_task.output_contract so the engine infers it from the agent.",
-      "Do not invent output contract ids; use only validOutputContracts returned by this catalog.",
-    ],
-    parameters: DELEGATION_CATALOG_PARAMS,
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const scope: AgentScope = params.scope === "user" || params.scope === "both" ? params.scope : "project";
-      const catalog = buildAgentCatalog({ cwd: ctx.cwd, scope });
-      return textResult(formatDelegationCatalogSummary(catalog), catalog as unknown as Record<string, unknown>);
-    },
-  });
-  void ensureRuntime;
-}
-
-/** 2) delegate_agent — single / parallel / chain. */
+/** 1) delegate_agent — single / parallel / chain. */
 export function registerDelegateAgent(pi: ExtensionAPI, ensureRuntime: EnsureRuntime): void {
   pi.registerTool({
     name: "delegate_agent",
@@ -422,7 +398,7 @@ export function registerDelegateAgent(pi: ExtensionAPI, ensureRuntime: EnsureRun
     ].join(" "),
     promptSnippet: "Delegate focused work to project specialist agents with isolated child Pi contexts",
     promptGuidelines: [
-      "If agent routing is uncertain, call zob_delegation_catalog before the first delegation.",
+      "Choose the agent by desired deliverable: standard agents are explore (read-only facts), planner (plans), implementer (bounded edits), oracle (skeptical review), qa (verification), vision (image analysis). More cards live in <cwd>/.pi/agents and ~/.pi/agents — read those folders to discover them; a project card overrides a user card with the same name.",
       "Use delegate_agent for broad discovery, external research, skeptical review, or independent QA before making risky edits.",
       "Give each child a bounded six-part contract and a concrete final output shape.",
       "Optional cwd selects the child working directory; it does not replace allowed_paths or write-scope grants.",
@@ -431,7 +407,7 @@ export function registerDelegateAgent(pi: ExtensionAPI, ensureRuntime: EnsureRun
     parameters: DELEGATE_PARAMS,
     async execute(toolCallId, params, _signal, onUpdate, ctx) {
       const rt = ensureRuntime(ctx);
-      const scope: AgentScope = params.scope === "user" || params.scope === "both" ? params.scope : "project";
+      const scope: AgentScope = params.scope === "project" || params.scope === "user" ? params.scope : "both";
       const agents = discoverAgents(ctx.cwd, scope);
       const makeDetails = (mode: DelegationDetails["mode"], results: ChildResult[]): Record<string, unknown> => ({
         mode,
@@ -566,7 +542,7 @@ export function registerDelegateTask(pi: ExtensionAPI, ensureRuntime: EnsureRunt
         return textResult(formatChildResultText(failed), { mode: "single", results: [failed], agents: agentsOf(ctx, params.scope) });
       }
 
-      const scope: AgentScope = params.scope === "user" || params.scope === "both" ? params.scope : "project";
+      const scope: AgentScope = params.scope === "project" || params.scope === "user" ? params.scope : "both";
       const agents = discoverAgents(ctx.cwd, scope);
       const structuredTask = buildStructuredTask(params);
       const background = params.run_in_background === true;
@@ -747,7 +723,6 @@ export function registerContinueRun(pi: ExtensionAPI, ensureRuntime: EnsureRunti
 
 /** Register all 6 delegation tools on the Pi API. */
 export function registerTools(pi: ExtensionAPI, ensureRuntime: EnsureRuntime): void {
-  registerDelegationCatalog(pi, ensureRuntime);
   registerDelegateAgent(pi, ensureRuntime);
   registerDelegateTask(pi, ensureRuntime);
   registerGetDelegationRun(pi, ensureRuntime);
@@ -762,7 +737,7 @@ function usageEmpty(): ChildResult["usage"] {
 }
 
 function agentsOf(ctx: SessionContext, scope: AgentScope | undefined): string[] {
-  return discoverAgents(ctx.cwd, scope === "user" || scope === "both" ? scope : "project").map((agent) => agent.name);
+  return discoverAgents(ctx.cwd, scope === "project" || scope === "user" ? scope : "both").map((agent) => agent.name);
 }
 
 function compactBackgroundState(state: BackgroundRunState): Record<string, unknown> {
@@ -867,7 +842,7 @@ export function normalizeDelegateTaskParams(raw: Record<string, unknown>): Deleg
     fresh: typeof raw.fresh === "boolean" ? raw.fresh : undefined,
     child_goal: childGoal,
     cwd: str(raw.cwd),
-    scope: raw.scope === "user" || raw.scope === "both" ? raw.scope : "project",
+    scope: raw.scope === "project" || raw.scope === "user" ? raw.scope : "both",
     model: str(raw.model),
     thinking: asThinking(raw.thinking),
     load_skills: asStrArr(loadSkills),

@@ -60,20 +60,7 @@ const ALLOWED_PATHS_DESC =
 const FORBIDDEN_PATHS_DESC =
   "Deny-only path patterns delegated children must not touch. May be repo-local, absolute, or home-relative; broad roots are rejected.";
 
-/** 1) zob_delegation_catalog. */
-export const DELEGATION_CATALOG_PARAMS: JsonSchema = {
-  type: "object",
-  properties: {
-    scope: AGENT_SCOPE_SCHEMA,
-    include_contract_requirements: {
-      type: "boolean",
-      description: "Include required marker names for each valid output contract. Default false for compact routing.",
-    },
-  },
-  additionalProperties: false,
-};
-
-/** 2) delegate_agent. */
+/** 1) delegate_agent. */
 export const DELEGATE_PARAMS: JsonSchema = {
   type: "object",
   properties: {
@@ -99,7 +86,7 @@ export const DELEGATE_PARAMS: JsonSchema = {
   additionalProperties: false,
 };
 
-/** 3) delegate_task — canonical + safe aliases. */
+/** 2) delegate_task — canonical + safe aliases. */
 export const DELEGATE_TASK_PARAMS: JsonSchema = {
   type: "object",
   properties: {
@@ -158,7 +145,7 @@ export const DELEGATE_TASK_PARAMS: JsonSchema = {
   additionalProperties: false,
 };
 
-/** 4) get_delegation_run. */
+/** 3) get_delegation_run. */
 export const DELEGATION_RUN_PARAMS: JsonSchema = {
   type: "object",
   properties: {
@@ -168,7 +155,7 @@ export const DELEGATION_RUN_PARAMS: JsonSchema = {
   additionalProperties: false,
 };
 
-/** 5) await_delegation_run. */
+/** 4) await_delegation_run. */
 export const AWAIT_DELEGATION_RUN_PARAMS: JsonSchema = {
   type: "object",
   properties: {
@@ -181,7 +168,7 @@ export const AWAIT_DELEGATION_RUN_PARAMS: JsonSchema = {
   additionalProperties: false,
 };
 
-/** 6) continue_run. */
+/** 5) continue_run. */
 export const CONTINUE_RUN_PARAMS: JsonSchema = {
   type: "object",
   properties: {

@@ -13,6 +13,7 @@
  *   dirs it wants searched.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentScope, ChildThinkingLevel } from "../core/types.js";
 import { parseMemoryScope, type MemoryScope } from "../engine/memory.js";
@@ -49,9 +50,19 @@ export type AgentSource = AgentCard["source"];
  */
 export type ResolveAgentDirs = (cwd: string, source: AgentSource) => string[];
 
-/** Default resolver: project agents under `<cwd>/.pi/agents`, no user dir. */
-const defaultResolveAgentDirs: ResolveAgentDirs = (cwd, source) =>
-  source === "user" ? [] : [join(cwd, ".pi", "agents")];
+/**
+ * Default resolver: project agents under `<cwd>/.pi/agents`, user agents under
+ * `~/.pi/agents` (available in EVERY session, regardless of cwd). The user dir
+ * is overridable via `PI_SUBAGENTS_USER_AGENTS_DIR` — set it to an empty string
+ * to disable user agents entirely (tests/CI isolation), or to an absolute path
+ * to relocate the user card directory.
+ */
+const defaultResolveAgentDirs: ResolveAgentDirs = (cwd, source) => {
+  if (source !== "user") return [join(cwd, ".pi", "agents")];
+  const override = process.env.PI_SUBAGENTS_USER_AGENTS_DIR;
+  if (override !== undefined) return override.trim() === "" ? [] : [override];
+  return [join(homedir(), ".pi", "agents")];
+};
 
 /**
  * Parse YAML-like frontmatter delimited by `---\n ... \n---\n`. Fields are

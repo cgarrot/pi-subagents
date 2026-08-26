@@ -39,5 +39,8 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const res = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
+const res = spawnSync(process.execPath, ["--test", ...files], {
+  stdio: "inherit",
+  env: { ...process.env, PI_SUBAGENTS_USER_AGENTS_DIR: "" },
+});
 process.exit(res.status ?? 1);

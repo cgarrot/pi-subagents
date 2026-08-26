@@ -12,10 +12,13 @@ when agent/contract/model routing is uncertain.
 
 ## Mandatory routing check
 
-1. If you are not certain which agent to use, build the **registry catalog**
-   first and search it. The catalog is body-free (agents carry a `promptHash`,
-   never the prompt body) and declares `noExecution: true`,
-   `childDispatchAllowed: false`, `bodyStored: false`.
+1. If you are not certain which agent to use, inspect the agent cards:
+   project cards live in `<cwd>/.pi/agents/*.md`, user cards in
+   `~/.pi/agents/*.md` (available in every session; a project card overrides a
+   user card with the same name). You can read those folders with `read`/`ls`.
+   The human-facing `/agents catalog` command prints the same body-free catalog
+   (agents carry a `promptHash`, never the prompt body; `noExecution: true`,
+   `childDispatchAllowed: false`, `bodyStored: false`).
 2. Choose the agent by the deliverable you need (see below).
 3. **Model routing is advisory unless current availability is proven.** An
    explicit `model` override must be present in the *verified model catalog*

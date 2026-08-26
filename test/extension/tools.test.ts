@@ -12,11 +12,13 @@ import {
   createSubagentsRuntime,
   formatChildProgressLine,
   formatChildResultText,
+  formatDelegationCatalogSummary,
   formatTokenCount,
   makeChildEventFeed,
   registerTools,
   type SubagentsRuntime,
 } from "../../src/extension/tools.js";
+import { buildAgentCatalog } from "../../src/registry/index.js";
 import { DELEGATE_TASK_PARAMS } from "../../src/extension/schemas.js";
 import type { ChildProgressEvent, ChildResult } from "../../src/core/types.js";
 import type { SpawnFn } from "../../src/lanes/index.js";
@@ -96,19 +98,17 @@ const runWithUpdate = (
   return { promise, updates };
 };
 
-describe("extension/tools: zob_delegation_catalog", () => {
-  it("returns a body-free catalog as content text + details", async () => {
+describe("extension/tools: formatDelegationCatalogSummary (powers /agents catalog)", () => {
+  it("returns a body-free catalog summary including contracts", async () => {
     const dir = tempRepo("catalog");
     try {
-      const { ctx, getTool } = setup(dir);
-      const result = await run(getTool("zob_delegation_catalog"), {}, ctx);
-      assert.ok(result.content[0]!.text.includes("alpha"));
-      assert.ok(result.content[0]!.text.includes("Valid output contracts:"));
-      const details = result.details as Record<string, unknown>;
-      assert.equal(details.schema, "zob.agent-catalog.v1");
-      assert.equal(details.bodyStored, false);
-      assert.equal(details.childDispatchAllowed, false);
-      assert.equal(details.noExecution, true);
+      const catalog = buildAgentCatalog({ cwd: dir, scope: "both", resolveAgentDirs: () => [join(dir, ".pi", "agents")] });
+      const text = formatDelegationCatalogSummary(catalog);
+      assert.ok(text.includes("alpha"));
+      assert.ok(text.includes("Valid output contracts:"));
+      assert.equal(catalog.bodyStored, false);
+      assert.equal(catalog.childDispatchAllowed, false);
+      assert.equal(catalog.noExecution, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -665,9 +665,9 @@ describe("extension/tools: catalog model_class", () => {
         "---\nname: scout\ndescription: scout agent\ntools: read\nmodel_class: cheap\n---\nYou are scout.",
         "utf8",
       );
-      const { ctx, getTool } = setup(dir);
-      const result = await run(getTool("zob_delegation_catalog"), {}, ctx);
-      assert.ok(result.content[0]!.text.includes("model_class=cheap"));
+      const catalog = buildAgentCatalog({ cwd: dir, scope: "both", resolveAgentDirs: () => [agentsDir] });
+      const text = formatDelegationCatalogSummary(catalog);
+      assert.ok(text.includes("model_class=cheap"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
