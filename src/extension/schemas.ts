@@ -11,8 +11,8 @@ import type { JsonSchema } from "./pi-types.js";
 const AGENT_SCOPE_SCHEMA: JsonSchema = {
   type: "string",
   enum: ["project", "user", "both"],
-  description: "Which agent catalog to use. Default: project.",
-  default: "project",
+  description: "Which agent catalog to use. Default: both (user cards ~/.pi/agents + project cards <cwd>/.pi/agents).",
+  default: "both",
 };
 
 /** Shared leaf: child reasoning effort override. */

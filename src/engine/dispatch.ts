@@ -823,7 +823,7 @@ export class DispatchEngine {
     errors.push(...worktreeGate.errors);
     const requiredTools = opts.tools ?? [];
 
-    const scope = opts.scope ?? this.options.scope ?? "project";
+    const scope = opts.scope ?? this.options.scope ?? "both";
     const agents = discoverAgents(repoRoot, scope, this.options.resolveAgentDirs);
     const agent = agents.find((candidate) => candidate.name.toLowerCase() === agentName.toLowerCase());
     if (!agent) {
