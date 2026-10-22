@@ -405,7 +405,7 @@ export function registerDelegateAgent(pi: ExtensionAPI, ensureRuntime: EnsureRun
       "If effective tools include edit/write, provide non-empty repo-relative-only allowed_paths.",
     ],
     parameters: DELEGATE_PARAMS,
-    async execute(toolCallId, params, _signal, onUpdate, ctx) {
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
       const rt = ensureRuntime(ctx);
       const scope: AgentScope = params.scope === "project" || params.scope === "user" ? params.scope : "both";
       const agents = discoverAgents(ctx.cwd, scope);
@@ -439,6 +439,9 @@ export function registerDelegateAgent(pi: ExtensionAPI, ensureRuntime: EnsureRun
           ...commonPaths,
           parentToolCallId: toolCallId,
           source: "delegate_agent",
+          // ESC escape hatch: aborting the parent tool call kills the child
+          // (SIGTERM → killGrace → SIGKILL) instead of leaving it running.
+          signal,
           onChildEvent: makeChildEventFeed(params.feed === false ? undefined : onUpdate),
         });
         return isFailed(result)
@@ -468,6 +471,7 @@ export function registerDelegateAgent(pi: ExtensionAPI, ensureRuntime: EnsureRun
           concurrency: 4,
           parentToolCallId: toolCallId,
           source: "delegate_agent",
+          signal,
           onChildEvent: makeChildEventFeed(params.feed === false ? undefined : onUpdate),
         });
         const successCount = details.results.filter((result) => !isFailed(result)).length;
@@ -487,6 +491,7 @@ export function registerDelegateAgent(pi: ExtensionAPI, ensureRuntime: EnsureRun
         const details = await rt.engine.chain(steps, {
           parentToolCallId: toolCallId,
           source: "delegate_agent",
+          signal,
           onChildEvent: makeChildEventFeed(params.feed === false ? undefined : onUpdate),
         });
         const results = details.results;
@@ -563,6 +568,8 @@ export function registerDelegateTask(pi: ExtensionAPI, ensureRuntime: EnsureRunt
         background,
         parentToolCallId: toolCallId,
         source: "delegate_task",
+        // ESC escape hatch: aborting the parent tool call kills the child.
+        signal: background ? undefined : signal,
         onChildEvent: background || params.feed === false ? undefined : makeChildEventFeed(onUpdate),
       });
 

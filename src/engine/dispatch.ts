@@ -297,6 +297,13 @@ export interface SingleDispatchOptions {
    */
   contextMode?: ContextMode;
   /**
+   * Parent-side abort signal (the delegating tool call's AbortSignal —
+   * ESC in the TUI). Propagated to the lane pool: SIGTERM → killGrace →
+   * SIGKILL, run settles `aborted`. Bounds children stuck in a runaway
+   * tool call that never reaches the turn-limit abort.
+   */
+  signal?: AbortSignal;
+  /**
    * C6 worktree isolation: run the child inside a disposable DETACHED git
    * worktree of the repo (child cwd = worktree path, monorepo subfolders
    * mirrored). After the run the worktree is cleaned up: changes are
@@ -374,6 +381,8 @@ export interface ParallelDispatchOptions {
   source?: DelegationRunSource;
   /** Batch-level child progress feed, forwarded to every task's run (per-run option wins over engine). */
   onChildEvent?: (event: ChildProgressEvent) => void;
+  /** Parent-side abort signal, forwarded to every task (ESC kills the whole batch). */
+  signal?: AbortSignal;
 }
 
 export interface ChainStepInput {
@@ -394,6 +403,8 @@ export interface ChainDispatchOptions {
   lane?: string;
   /** Chain-level child progress feed, forwarded to every step's run (per-run option wins over engine). */
   onChildEvent?: (event: ChildProgressEvent) => void;
+  /** Parent-side abort signal, forwarded to every step (ESC kills the whole chain). */
+  signal?: AbortSignal;
 }
 
 /** Outcome of the preflight gate: either a launchable resolution or blocking errors. */
@@ -771,6 +782,7 @@ export class DispatchEngine {
         parentToolCallId: opts.parentToolCallId,
         source: opts.source,
         onChildEvent: opts.onChildEvent,
+        signal: opts.signal,
       }),
     );
     return { mode: "parallel", results, agents };
@@ -797,6 +809,7 @@ export class DispatchEngine {
         parentToolCallId: opts.parentToolCallId,
         source: opts.source,
         onChildEvent: opts.onChildEvent,
+        signal: opts.signal,
       });
       results.push(result);
       agents.push(step.agent);
@@ -1083,6 +1096,8 @@ export class DispatchEngine {
         // show tokens DURING the run (settle stays authoritative via `usage`).
         if (event.kind === "turn") this.recordLiveUsage(runId, event);
       },
+      // ESC escape hatch: forward the delegating tool call's abort signal.
+      signal: opts.signal,
     };
     let result: ChildResult;
     let childCwd = preflight.cwd;

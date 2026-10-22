@@ -11,11 +11,11 @@
  *   - `providerOfModel`: extract the provider prefix of a `provider/model`
  *     string (builtin/bare ids carry no provider -> no extension).
  *   - `buildProviderExtensionResolver`: config map (`.subagents/config.json`
- *     `providerExtensions`) over the built-in default
- *     `ollama-cloud` -> `~/pi-provider-ollama-cloud/src/index.ts`, guarded by
- *     existsSync — a path that does not exist is NEVER returned (no
- *     hard-coded dead paths). Injectable exists/home for hermetic tests;
- *     results are memoized per provider.
+ *     `providerExtensions`) over the built-in defaults (`ollama-cloud`,
+ *     `opencode-go-auto`, `opencode-go-2`), guarded by existsSync — a path
+ *     that does not exist is NEVER returned (no hard-coded dead paths).
+ *     Injectable exists/home for hermetic tests; results are memoized per
+ *     provider.
  *
  * Pure module except the existsSync default: zero @earendil-works/* imports,
  * zero child_process.
@@ -33,6 +33,34 @@ export const DEFAULT_PROVIDER_EXTENSION_PROVIDER = "ollama-cloud";
 /** Default extension entry for the built-in provider, under a given home. */
 export function defaultOllamaCloudExtensionPath(home: string = homedir()): string {
   return join(home, "pi-provider-ollama-cloud", "src", "index.ts");
+}
+
+/**
+ * Built-in provider -> extension-entry defaults, under a given home dir.
+ *
+ * Keys are pi provider ids that only exist behind a user-level extension:
+ * children are spawned `--no-extensions` (hermetic), so any model whose
+ * provider matches one of these defaults gets `-e <path>` re-added to its
+ * spawn argv (and to availability probes). Every candidate stays
+ * existsSync-guarded — a path that does not exist on this machine is NEVER
+ * injected. Explicit `.subagents/config.json` `providerExtensions` entries
+ * take precedence over these defaults.
+ */
+export const BUILT_IN_PROVIDER_EXTENSION_DEFAULTS: Readonly<
+  Record<string, (home: string) => string>
+> = {
+  [DEFAULT_PROVIDER_EXTENSION_PROVIDER]: (home) => defaultOllamaCloudExtensionPath(home),
+  // OpenCode Go multi-account failover (user extension registers BOTH the
+  // `opencode-go-auto` failover provider and the `opencode-go-2` account slot;
+  // the builtin `opencode-go` provider needs no extension).
+  "opencode-go-auto": (home) => join(home, ".pi", "agent", "extensions", "opencode-go-auto.ts"),
+  "opencode-go-2": (home) => join(home, ".pi", "agent", "extensions", "opencode-go-auto.ts"),
+};
+
+/** Resolve the built-in default extension entry of a provider (undefined = none). */
+export function defaultProviderExtensionPath(provider: string, home: string = homedir()): string | undefined {
+  const build = BUILT_IN_PROVIDER_EXTENSION_DEFAULTS[provider];
+  return build ? build(home) : undefined;
 }
 
 /**
@@ -71,14 +99,10 @@ export function buildProviderExtensionResolver(
   const cache = new Map<string, string | undefined>();
   const resolve = (provider: string): string | undefined => {
     if (cache.has(provider)) return cache.get(provider);
-    const candidates: string[] =
-      map[provider] !== undefined
-        ? [map[provider]!]
-        : provider === DEFAULT_PROVIDER_EXTENSION_PROVIDER
-          ? [defaultOllamaCloudExtensionPath(options.home)]
-          : [];
-    const found = candidates.find((path) => exists(path));
-    const value = found ?? undefined;
+    const explicit = map[provider];
+    const candidate =
+      explicit !== undefined ? explicit : defaultProviderExtensionPath(provider, options.home);
+    const value = candidate && candidate.trim() !== "" && exists(candidate) ? candidate : undefined;
     cache.set(provider, value);
     return value;
   };

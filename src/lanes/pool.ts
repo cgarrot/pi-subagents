@@ -114,6 +114,14 @@ export interface LaneDispatchInput {
    * input. In-memory only — never persisted to ledger/attestations.
    */
   onChildEvent?: (event: ChildProgressEvent) => void;
+  /**
+   * External abort (e.g. the parent tool call's AbortSignal — ESC in the
+   * TUI): when it fires, the SAME bounded kill path runs (SIGTERM →
+   * killGraceMs → SIGKILL) and the result settles with stopReason "aborted".
+   * A child stuck in a runaway tool call (e.g. a never-ending `find`) never
+   * reaches the turn-limit abort; this is the parent-side escape hatch.
+   */
+  signal?: AbortSignal;
 }
 
 export interface LanePoolOptions {
@@ -401,15 +409,26 @@ export class LanePool {
       });
       abortNow = () => handle.abort();
 
+      // Parent-side abort (ESC → tool signal → engine → here): same bounded
+      // kill as the turn-limit hard abort. Listener removed on exit so a
+      // settled task never leaks an aborted-signal callback.
+      const externalAbort = (): void => {
+        abortNow?.();
+      };
+      if (input.signal?.aborted) externalAbort();
+      else input.signal?.addEventListener("abort", externalAbort, { once: true });
+
       const exitPromise = new Promise<void>((resolveExit) => {
         child.on("error", (error) => {
           handle.dispose();
+          input.signal?.removeEventListener("abort", externalAbort);
           result.exitCode = 1;
           result.errorMessage = error.message;
           resolveExit();
         });
         child.on("close", (code) => {
           handle.dispose();
+          input.signal?.removeEventListener("abort", externalAbort);
           parser.flush();
           result.exitCode = code ?? (wasAborted ? 130 : 0);
           if (wasAborted) {
