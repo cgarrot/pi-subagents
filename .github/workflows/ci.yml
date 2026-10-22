@@ -11,8 +11,12 @@ jobs:
   test:
     strategy:
       fail-fast: false
+      # Windows is not in this matrix yet: the pre-existing child/policy
+      # path suite is POSIX-only. The new RPC worker has a taskkill path,
+      # but the package as a whole does not claim Windows until that suite
+      # is portable. pi-jobd/pi-mesh keep Windows in their matrices.
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

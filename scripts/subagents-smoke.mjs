@@ -179,10 +179,10 @@ async function main() {
       assert.equal(catalog.bodyStored, false);
       assert.equal(catalog.promptBodiesStored, false);
       const names = catalog.entries.map((e) => e.id).sort();
-      for (const want of ["explore", "planner", "implementer", "oracle", "qa"]) {
+      for (const want of ["explore", "planner", "implementer", "oracle", "qa", "vision"]) {
         assert.ok(names.includes(want), `catalog missing default agent '${want}'`);
       }
-      assert.equal(names.length, 5, `expected exactly 5 default agents, got ${names.length}`);
+      assert.equal(names.length, 6, `expected exactly 6 default agents, got ${names.length}`);
       for (const entry of catalog.entries) {
         assert.ok(entry.promptHash, `entry ${entry.id} must carry a promptHash (body-free)`);
         assert.equal(entry.id, entry.id.toLowerCase());
