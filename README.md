@@ -195,6 +195,19 @@ adapter `src/extension`, CLI `src/cli`).
 | `get_delegation_run` | engine (`BackgroundRunRegistry`) | read current background run state |
 | `await_delegation_run` | engine | bounded wait for background settlement |
 | `subagents` (CLI) | `src/cli/subagents.ts` | admin surface over the pure core |
+| `rpc_start` | extension tool | controller-owned headless `pi --mode rpc` worker (hermetic: no extensions, no MCP); optional agent card + first task |
+| `rpc_prompt` | extension tool | prompt, or steer/follow-up while the worker is streaming |
+| `rpc_abort` | extension tool | abort the current TURN, wait for `agent_settled` (history kept) |
+| `rpc_redirect` | extension tool | abort → settle → prompt the new instruction, atomically |
+| `rpc_state` | extension tool | live state of one worker, or list the session's workers |
+| `rpc_stop` | extension tool | stop the worker and its process tree |
+
+> The `rpc_*` tools are **local-only**: a worker is a child of your session,
+> not a mesh peer. They exist to change a busy worker's plan without killing
+> it. A peer can stop/steer one through pi-mesh (`mesh_run_control`) when mesh
+> policy allows it. See [`docs/rpc-control.md`](docs/rpc-control.md).
+> `abort_bash` is deliberately not exposed: on real pi it does not abort the
+> agent's `bash` tool.
 
 `subagents` CLI commands:
 
@@ -236,6 +249,17 @@ frontmatter fields and how to override them with project-local `.pi/agents`.
 > Note: agent discovery reads `*.md` under an agent dir. The package's
 > `agents/README.md` is documentation only; a project agent dir should hold
 > only agent cards (or exclude docs) so no spurious `readme` agent is found.
+
+## Real tests (need a model)
+
+```bash
+npm run real:redirect     # real pi worker: redirect mid-TOOL, steer, stop tree
+npm run real:run-control  # real pi session + mesh_run_control (rpc_start -> stop)
+npm run rpc:abort-smoke   # real mid-tool abort timing
+```
+
+These are dev-only (they spawn real `pi` children and call a model); the unit
+suite and the fake-worker smokes need no credentials.
 
 ## Scripts
 

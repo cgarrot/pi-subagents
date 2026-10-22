@@ -20,6 +20,12 @@ describe("extension/registration: 5 tools via default extension", () => {
       "delegate_agent",
       "delegate_task",
       "get_delegation_run",
+      "rpc_abort",
+      "rpc_prompt",
+      "rpc_redirect",
+      "rpc_start",
+      "rpc_state",
+      "rpc_stop",
     ]);
 
     for (const tool of tools.values()) {
@@ -53,6 +59,10 @@ describe("extension/registration: 5 tools via default extension", () => {
     subagentsExtension(api);
     const ctx = fakeCtx("/tmp/pi-subagents-nocwd");
     for (const tool of tools.values()) {
+      // rpc_start would spawn a REAL pi (the registry default): registration
+      // is asserted above; execution is covered by test/rpc/tools.test.ts
+      // with a fake worker.
+      if (tool.name === "rpc_start") continue;
       // Call with empty params; must not throw and must return {content:[{type:"text"}]}.
       const result = await tool.execute("call", {}, undefined, undefined, ctx);
       assert.ok(Array.isArray(result.content), `${tool.name} content array`);

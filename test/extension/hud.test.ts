@@ -200,7 +200,12 @@ describe("extension/widget-refresh: shared ticker + content diff", () => {
     let b = 0;
     const offA = ticker.subscribe(() => { a += 1; });
     const offB = ticker.subscribe(() => { b += 1; });
-    await new Promise((resolve) => setTimeout(resolve, 55));
+    // Poll instead of a fixed sleep: a loaded CI runner can delay a 10 ms
+    // interval (observed a=1,b=1 after 55 ms under a full-suite load).
+    const deadline = Date.now() + 1_000;
+    while ((a < 3 || b < 3) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     assert.ok(a >= 3 && b >= 3, `both subscribers ticked (a=${a}, b=${b})`);
     offA();
     offB();

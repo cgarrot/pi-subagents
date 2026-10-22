@@ -15,6 +15,9 @@ import { FleetView } from "./fleet.js";
 import { SubagentsHud } from "./hud.js";
 import type { ExtensionAPI, SessionContext } from "./pi-types.js";
 import { registerSubagentsRpc } from "./rpc.js";
+import { registerRpcTools } from "./rpc-tools.js";
+import { registerMeshCtl } from "./mesh-ctl.js";
+import { RpcWorkerRegistry } from "../rpc/registry.js";
 import { createSubagentsRuntime, registerTools, type SubagentsRuntime } from "./tools.js";
 
 /**
@@ -68,6 +71,13 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
   // Tools + commands are registered IMMEDIATELY (they build the engine lazily).
   registerTools(pi, ensureRuntime);
   registerCommands(pi, ensureRuntime);
+  // Controller-owned headless workers (rpc_start/prompt/abort/redirect/state/stop).
+  // One registry per session; the workers are stopped on session shutdown.
+  const rpcRegistry = new RpcWorkerRegistry();
+  registerRpcTools(pi, () => rpcRegistry);
+  // Remote run control from pi-mesh (the mesh policy already authorized the
+  // sender; this handler only acts on this session's own workers).
+  registerMeshCtl(pi, () => rpcRegistry);
   // Cross-extension RPC (ping/spawn/stop) — no-op when the host has no bus.
   registerSubagentsRpc(pi, { getRuntime, eventBus });
 
@@ -112,7 +122,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
   });
 
   // Close the engine pool (aborts in-flight children) and detach the HUD.
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
+    // A controller-owned worker must not outlive the session that owns it.
+    // Await the bounded stop so a fast host exit does not orphan the tree.
+    await rpcRegistry.disposeAll();
     if (runtime) {
       try {
         runtime.engine.close();

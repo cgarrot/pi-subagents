@@ -39,6 +39,7 @@
     "dist",
     "!dist/test",
     "index.ts",
+    "docs",
     "README.md",
     "LICENSE",
     "skills",
@@ -57,7 +58,12 @@
     "smoke": "node scripts/subagents-smoke.mjs",
     "ci": "npm run build && node scripts/run-tests.mjs && npm run smoke",
     "doctor": "node dist/src/cli/subagents.js doctor",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "rpc:smoke": "node scripts/rpc-smoke.mjs",
+    "rpc:abort-smoke": "node scripts/rpc-abort-smoke.mjs",
+    "mesh:smoke": "node scripts/mesh-run-smoke.mjs",
+    "real:redirect": "node scripts/real-redirect-cases.mjs",
+    "real:run-control": "node scripts/real-run-control-e2e.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
