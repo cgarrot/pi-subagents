@@ -45,7 +45,7 @@ async function main() {
   console.log("started", run.runId, "pid", run.pid);
 
   const acks = [];
-  const rt = { client: { alias: "bob", sendCtlAck: (ack) => acks.push(ack) }, ctx: null };
+  const rt = { client: { alias: "bob", sendCtlAck: (ack) => acks.push(ack) }, ctx: null, ctlAllowFrom: ["alice"] };
   const pi = { sendMessage: () => {}, events };
 
   const stop = buildFrame({
