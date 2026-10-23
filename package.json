@@ -1,6 +1,6 @@
 {
   "name": "pi-subagents-extension",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Standalone subagent delegation for Pi — six-part contracts, path-scoped gates, model-class routing with honest fallback, live action feed, hash-only ledger. Zero runtime dependencies. Published as pi-subagents-extension on npm (the plain pi-subagents name is taken by another project).",
   "type": "module",
   "license": "MIT",
