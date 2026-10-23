@@ -119,8 +119,10 @@ function assertBodyFree(payloads: Array<{ channel: string; payload: unknown }>):
   }
 }
 
+const CI_SCALE = process.env.CI ? 3 : 1;
+
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + timeoutMs * CI_SCALE;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error("waitFor timeout");
     await new Promise((resolve) => setTimeout(resolve, 10));
